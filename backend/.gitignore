@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment DESTE DIRETÓRIO
+venv/
+env/
+ENV/
+.venv
+
+# Database - IMPORTANTE: NÃO COMMITAR O BANCO VETORIAL
+database/
+*.db
+*.sqlite
+*.sqlite3
+
+# Books - IMPORTANTE: NÃO COMMITAR OS PDFs (direitos autorais)
+books/
+*.pdf
+*.docx
+*.doc
+
+# Feedback data
+feedback/
+*.jsonl
+
+# Environment variables
+.env
+.env.local
+
+# Model cache (HuggingFace downloads)
+.cache/
+models/
+*.bin
+*.safetensors
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
+
+# Python distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# PyTorch models
+*.pt
+*.pth
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
