@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-from feedback_system import save_feedback, get_feedback_stats
 from chat_history import (
     save_conversation, 
     load_conversation, 
@@ -178,6 +177,27 @@ def check_api_status():
     except Exception as e:
         return None
 
+def save_feedback_via_api(question: str, answer: str, sources: list, rating: str, comment: str, user_name: str):
+    """Save feedback via API instead of locally"""
+    try:
+        response = requests.post(
+            f"{API_URL}/feedback",
+            json={
+                "question": question,
+                "answer": answer,
+                "sources": sources,
+                "keywords": [],
+                "rating": rating,
+                "comment": comment,
+                "user_name": user_name
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        raise Exception(f"Erro ao salvar feedback: {str(e)}")
+
 def query_api(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None, enable_preview: bool = True):
     """Send query to API with conversation history"""
     try:
@@ -309,20 +329,24 @@ def display_message_with_preview(message: dict, idx: int):
                 user_msg_idx = idx - 1
                 question = st.session_state.messages[user_msg_idx]["content"] if user_msg_idx >= 0 else ""
                 
-                save_feedback(
-                    question=question,
-                    answer=message["content"],
-                    sources=[s['content'][:200] for s in message.get("sources", [])],
-                    keywords=[],
-                    rating=rating,
-                    comment=comment,
-                    user_name=st.session_state.user_name
-                )
-                
-                st.session_state.messages[idx]["feedback_given"] = True
-                st.success("✅ Obrigado!")
-                time.sleep(1)
-                st.rerun()
+                try:
+                    # Save via API instead of locally
+                    save_feedback_via_api(
+                        question=question,
+                        answer=message["content"],
+                        sources=[s['content'][:200] for s in message.get("sources", [])],
+                        rating=rating,
+                        comment=comment,
+                        user_name=st.session_state.user_name
+                    )
+                    
+                    st.session_state.messages[idx]["feedback_given"] = True
+                    st.success("✅ Feedback salvo no servidor!")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ {str(e)}")
+                    st.caption("Verifique se o backend está rodando")
 
 def main():
     # Initialize session state
@@ -350,12 +374,28 @@ def main():
         
         if api_status:
             st.success("✅ Backend Online")
+            
+            # GPU/CPU info from health endpoint
             if api_status.get('cuda_available'):
                 st.info(f"🎮 {api_status.get('gpu', 'GPU')}")
             else:
                 st.warning("💻 CPU Mode")
+            
+            # Try to get detailed status (models info)
+            try:
+                status_response = requests.get(f"{API_URL}/status", timeout=3)
+                if status_response.status_code == 200:
+                    detailed_status = status_response.json()
+                    
+                    # Show models if loaded
+                    models = detailed_status.get('models_loaded', {})
+                    if models.get('both_ready'):
+                        st.caption(f"🤖 Modelos: {models.get('fast', '')} + {models.get('quality', '')}")
+            except:
+                pass
         else:
             st.error("❌ Backend Offline")
+            st.code(f"API URL: {API_URL}")
         
         st.markdown("---")
         
@@ -479,6 +519,12 @@ def main():
         ✅ Perguntas claras e específicas  
         ✅ Verifique as fontes citadas  
         ✅ Compare com os livros originais
+        
+        **Sobre o Modo Preview:**
+        
+        💭 Resposta imediata (1-2s)  
+        📚 Validação com livros (3-4s)  
+        🔍 Mostra o que foi corrigido
         
         **Exemplos:**
         • O que é o perispírito?

@@ -84,25 +84,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Constants
-FEEDBACK_DIR = "feedback"
-FEEDBACK_FILE = os.path.join(FEEDBACK_DIR, "responses_feedback.jsonl")
+# API Configuration
+try:
+    API_URL = st.secrets["API_URL"]
+except:
+    API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 def load_all_feedbacks():
-    """Load all feedbacks from JSONL file"""
-    if not os.path.exists(FEEDBACK_FILE):
-        return []
-    
-    feedbacks = []
+    """Load all feedbacks from API"""
     try:
-        with open(FEEDBACK_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    feedbacks.append(json.loads(line))
+        response = requests.get(f"{API_URL}/feedback/stats", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('feedbacks', [])
+        return []
     except Exception as e:
-        st.error(f"Erro ao carregar feedbacks: {e}")
-    
-    return feedbacks
+        st.error(f"Erro ao carregar feedbacks da API: {e}")
+        return []
 
 def get_stats(feedbacks):
     """Calculate statistics from feedbacks"""
@@ -189,20 +187,44 @@ def main():
     st.title("📊 Painel de Feedbacks")
     st.caption("Análise de feedbacks do Assistente Espírita")
     
+    # Check API connection
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown("### 🌐 Conexão com Backend")
+    with col2:
+        if st.button("🔄 Atualizar", use_container_width=True):
+            st.rerun()
+    
+    try:
+        health_response = requests.get(f"{API_URL}/health", timeout=5)
+        if health_response.status_code == 200:
+            st.success(f"✅ Conectado: {API_URL}")
+        else:
+            st.error("❌ Backend respondeu com erro")
+    except:
+        st.error(f"❌ Não foi possível conectar ao backend: {API_URL}")
+        st.info("Verifique se o backend está rodando e se a URL do ngrok está correta em secrets.toml")
+        return
+    
+    st.markdown("---")
+    
     # Load feedbacks
     feedbacks = load_all_feedbacks()
     
     if not feedbacks:
         st.warning("📭 Nenhum feedback encontrado ainda.")
-        st.info(f"Os feedbacks serão salvos em: `{FEEDBACK_FILE}`")
+        st.info(f"🌐 Conectado à API: {API_URL}")
         st.markdown("---")
         st.markdown("### 💡 Como funciona?")
         st.markdown("""
-        1. Use o Assistente Espírita (`app_final.py`)
+        1. Use o Assistente Espírita (frontend deployado)
         2. Após cada resposta, você verá botões de feedback
         3. Escolha: 👍 Boa, 😐 Regular, ou 👎 Ruim
         4. Opcionalmente, adicione um comentário
-        5. Volte aqui para ver as estatísticas!
+        5. Os feedbacks são salvos no backend (via ngrok)
+        6. Volte aqui para ver as estatísticas!
+        
+        **Nota:** Os feedbacks ficam salvos no seu computador local (backend).
         """)
         return
     
