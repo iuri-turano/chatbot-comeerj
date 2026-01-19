@@ -48,6 +48,15 @@ st.markdown("""
         color: white !important;
     }
     
+    /* Preview answer box */
+    .preview-box {
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
+        border-left: 4px solid #667eea;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+    }
+    
     /* Source cards */
     .source-card {
         background-color: rgba(255, 255, 255, 0.05);
@@ -143,20 +152,14 @@ st.markdown("""
         transform: translateX(5px);
     }
     
-    /* Streaming indicator */
-    .streaming-indicator {
-        display: inline-block;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background-color: #4ecdc4;
-        animation: pulse 1.5s ease-in-out infinite;
-        margin-right: 8px;
-    }
-    
-    @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.3; }
+    /* Validation notes */
+    .validation-notes {
+        background: rgba(78, 205, 196, 0.1);
+        border-left: 3px solid #4ecdc4;
+        padding: 0.75rem;
+        border-radius: 6px;
+        margin-top: 0.5rem;
+        font-size: 0.9rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -170,12 +173,12 @@ except:
 def check_api_status():
     """Check if API is online"""
     try:
-        response = requests.get(f"{API_URL}/", timeout=5)
+        response = requests.get(f"{API_URL}/health", timeout=5)
         return response.json()
     except Exception as e:
         return None
 
-def query_api(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None):
+def query_api(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None, enable_preview: bool = True):
     """Send query to API with conversation history"""
     try:
         # Prepare conversation history (exclude sources for API call)
@@ -191,10 +194,10 @@ def query_api(question: str, model_name: str, temperature: float, top_k: int, fe
             f"{API_URL}/query",
             json={
                 "question": question,
-                "model_name": model_name,
                 "temperature": temperature,
                 "top_k": top_k,
                 "fetch_k": fetch_k,
+                "enable_preview": enable_preview,
                 "conversation_history": api_history
             },
             timeout=600  # 10 minutes timeout
@@ -205,60 +208,6 @@ def query_api(question: str, model_name: str, temperature: float, top_k: int, fe
         raise Exception("⏱️ Timeout: A resposta demorou muito. Tente novamente ou reduza o número de trechos.")
     except requests.exceptions.ConnectionError:
         raise Exception("🔌 Erro de conexão: Verifique se o backend está rodando.")
-    except Exception as e:
-        raise Exception(f"❌ Erro: {str(e)}")
-
-def stream_api_response(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None):
-    """Stream response from API"""
-    try:
-        # Prepare conversation history
-        api_history = []
-        if conversation_history:
-            for msg in conversation_history:
-                api_history.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
-        
-        response = requests.post(
-            f"{API_URL}/query_stream",
-            json={
-                "question": question,
-                "model_name": model_name,
-                "temperature": temperature,
-                "top_k": top_k,
-                "fetch_k": fetch_k,
-                "conversation_history": api_history
-            },
-            stream=True,
-            timeout=600  # 10 minutes timeout
-        )
-        response.raise_for_status()
-        
-        full_text = ""
-        sources = None
-        
-        for line in response.iter_lines():
-            if line:
-                line = line.decode('utf-8')
-                if line.startswith('data: '):
-                    import json
-                    data = json.loads(line[6:])
-                    
-                    if data['type'] == 'token':
-                        full_text += data['content']
-                        yield data['content'], None
-                    elif data['type'] == 'sources':
-                        sources = data['sources']
-                    elif data['type'] == 'done':
-                        break
-                    elif data['type'] == 'error':
-                        raise Exception(data['content'])
-        
-        return full_text, sources
-        
-    except requests.exceptions.Timeout:
-        raise Exception("⏱️ Timeout: A resposta demorou muito.")
     except Exception as e:
         raise Exception(f"❌ Erro: {str(e)}")
 
@@ -290,6 +239,90 @@ def display_source(source: dict, index: int):
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+def display_message_with_preview(message: dict, idx: int):
+    """Display message with preview if available"""
+    
+    # If has preview, show both
+    if message.get("has_preview") and message.get("preview_answer"):
+        # Preview answer
+        st.markdown('<div class="preview-box">', unsafe_allow_html=True)
+        st.markdown("**💭 Resposta inicial:**")
+        st.markdown(message["preview_answer"])
+        st.caption("_Esta foi a resposta imediata. Veja abaixo a validação com os livros._")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Validated answer
+        st.markdown("**✅ Resposta fundamentada:**")
+        st.markdown(message["content"])
+        
+        # Validation notes
+        if message.get("validation_notes"):
+            st.markdown(f"""
+            <div class="validation-notes">
+                <strong>🔍 Processo de validação:</strong><br>
+                {message["validation_notes"]}
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        # Regular message
+        st.markdown(message["content"])
+    
+    # Show sources
+    if "sources" in message and message["sources"]:
+        with st.expander(f"📖 {len(message['sources'])} Fontes Consultadas"):
+            for i, source in enumerate(message["sources"], 1):
+                display_source(source, i)
+    
+    # Feedback section
+    if "feedback_given" not in message:
+        st.markdown("---")
+        st.markdown("**📝 Esta resposta foi útil?**")
+        
+        feedback_key = f"feedback_{idx}"
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("👍 Boa", key=f"good_{idx}", use_container_width=True):
+                st.session_state[feedback_key] = "good"
+        
+        with col2:
+            if st.button("😐 Regular", key=f"neutral_{idx}", use_container_width=True):
+                st.session_state[feedback_key] = "neutral"
+        
+        with col3:
+            if st.button("👎 Ruim", key=f"bad_{idx}", use_container_width=True):
+                st.session_state[feedback_key] = "bad"
+        
+        if feedback_key in st.session_state:
+            rating = st.session_state[feedback_key]
+            
+            comment = st.text_area(
+                "Comentário (opcional):",
+                placeholder="Compartilhe sua opinião...",
+                key=f"comment_{idx}",
+                height=80
+            )
+            
+            if st.button("✅ Enviar Feedback", key=f"submit_{idx}"):
+                user_msg_idx = idx - 1
+                question = st.session_state.messages[user_msg_idx]["content"] if user_msg_idx >= 0 else ""
+                
+                save_feedback(
+                    question=question,
+                    answer=message["content"],
+                    sources=[s['content'][:200] for s in message.get("sources", [])],
+                    keywords=[],
+                    rating=rating,
+                    comment=comment,
+                    user_name=st.session_state.user_name
+                )
+                
+                st.session_state.messages[idx]["feedback_given"] = True
+                st.success("✅ Obrigado!")
+                time.sleep(1)
+                st.rerun()
 
 def main():
     # Initialize session state
@@ -323,7 +356,6 @@ def main():
                 st.warning("💻 CPU Mode")
         else:
             st.error("❌ Backend Offline")
-            st.code(f"API URL: {API_URL}")
         
         st.markdown("---")
         
@@ -342,14 +374,8 @@ def main():
         # Model settings
         st.header("⚙️ Configurações")
         
-        model_name = st.selectbox(
-            "Modelo:",
-            ["qwen2.5:7b", "llama3.2:3b", "llama3.2:1b"],
-            help="qwen2.5:7b recomendado para melhor qualidade em português"
-        )
-        
         temperature = st.slider(
-            "Temperatura:",
+            "Criatividade:",
             min_value=0.0,
             max_value=1.0,
             value=0.3,
@@ -363,7 +389,7 @@ def main():
             max_value=10,
             value=3,
             step=1,
-            help="Quantos trechos dos livros usar (padrão: 3)"
+            help="Quantos trechos dos livros usar"
         )
         
         with st.expander("⚙️ Avançado"):
@@ -375,10 +401,10 @@ def main():
                 step=5
             )
             
-            enable_streaming = st.checkbox(
-                "Resposta progressiva",
+            enable_preview = st.checkbox(
+                "Modo Preview",
                 value=True,
-                help="Mostra a resposta conforme é gerada"
+                help="Mostra resposta rápida antes de validar com livros"
             )
         
         st.markdown("---")
@@ -463,68 +489,15 @@ def main():
     # Display chat history
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"], avatar="🧑" if message["role"] == "user" else "🤖"):
-            st.markdown(message["content"])
-            
-            # Show sources
-            if "sources" in message and message["sources"]:
-                with st.expander(f"📖 {len(message['sources'])} Fontes Consultadas"):
-                    for i, source in enumerate(message["sources"], 1):
-                        display_source(source, i)
-            
-            # Feedback section
-            if message["role"] == "assistant" and "feedback_given" not in message:
-                st.markdown("---")
-                st.markdown("**📝 Esta resposta foi útil?**")
-                
-                feedback_key = f"feedback_{idx}"
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    if st.button("👍 Boa", key=f"good_{idx}", use_container_width=True):
-                        st.session_state[feedback_key] = "good"
-                
-                with col2:
-                    if st.button("😐 Regular", key=f"neutral_{idx}", use_container_width=True):
-                        st.session_state[feedback_key] = "neutral"
-                
-                with col3:
-                    if st.button("👎 Ruim", key=f"bad_{idx}", use_container_width=True):
-                        st.session_state[feedback_key] = "bad"
-                
-                if feedback_key in st.session_state:
-                    rating = st.session_state[feedback_key]
-                    
-                    comment = st.text_area(
-                        "Comentário (opcional):",
-                        placeholder="Compartilhe sua opinião...",
-                        key=f"comment_{idx}",
-                        height=80
-                    )
-                    
-                    if st.button("✅ Enviar Feedback", key=f"submit_{idx}"):
-                        user_msg_idx = idx - 1
-                        question = st.session_state.messages[user_msg_idx]["content"] if user_msg_idx >= 0 else ""
-                        
-                        save_feedback(
-                            question=question,
-                            answer=message["content"],
-                            sources=[s['content'][:200] for s in message.get("sources", [])],
-                            keywords=[],
-                            rating=rating,
-                            comment=comment,
-                            user_name=st.session_state.user_name
-                        )
-                        
-                        st.session_state.messages[idx]["feedback_given"] = True
-                        st.success("✅ Obrigado!")
-                        time.sleep(1)
-                        st.rerun()
+            if message["role"] == "user":
+                st.markdown(message["content"])
+            else:
+                display_message_with_preview(message, idx)
     
     # Chat input
     if prompt := st.chat_input("Digite sua pergunta sobre Espiritismo..."):
         if not api_status:
-            st.error("❌ Backend offline. Não é possível processar perguntas.")
+            st.error("❌ Sistema offline. Não é possível processar perguntas.")
             return
         
         # Add user message
@@ -535,25 +508,54 @@ def main():
         
         # Get assistant response
         with st.chat_message("assistant", avatar="🤖"):
-            if enable_streaming:
-                # Streaming response
-                response_placeholder = st.empty()
-                full_response = ""
-                sources = None
-                
+            with st.spinner("🔍 Consultando os livros espíritas..."):
                 try:
-                    with st.spinner("🔍 Consultando os livros..."):
-                        for chunk, chunk_sources in stream_api_response(
-                            prompt, model_name, temperature, top_k, fetch_k,
-                            st.session_state.messages[:-1]  # Exclude current question
-                        ):
-                            if chunk:
-                                full_response += chunk
-                                response_placeholder.markdown(full_response + "▌")
-                            if chunk_sources:
-                                sources = chunk_sources
+                    result = query_api(
+                        prompt, 
+                        None,  # Model escolhido automaticamente
+                        temperature, 
+                        top_k, 
+                        fetch_k,
+                        st.session_state.messages[:-1],
+                        enable_preview
+                    )
+                    
+                    answer = result['answer']
+                    sources = result['sources']
+                    has_preview = result.get('has_preview', False)
+                    preview_answer = result.get('preview_answer')
+                    validation_notes = result.get('validation_notes')
+                    
+                    # Display immediately
+                    message_data = {
+                        "role": "assistant",
+                        "content": answer,
+                        "sources": sources,
+                        "has_preview": has_preview,
+                        "preview_answer": preview_answer,
+                        "validation_notes": validation_notes
+                    }
+                    
+                    # Show preview if available
+                    if has_preview and preview_answer:
+                        st.markdown('<div class="preview-box">', unsafe_allow_html=True)
+                        st.markdown("**💭 Resposta inicial:**")
+                        st.markdown(preview_answer)
+                        st.caption("_Esta foi a resposta imediata. Veja abaixo a validação com os livros._")
+                        st.markdown('</div>', unsafe_allow_html=True)
                         
-                        response_placeholder.markdown(full_response)
+                        st.markdown("**✅ Resposta fundamentada:**")
+                        st.markdown(answer)
+                        
+                        if validation_notes:
+                            st.markdown(f"""
+                            <div class="validation-notes">
+                                <strong>🔍 Processo de validação:</strong><br>
+                                {validation_notes}
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(answer)
                     
                     # Show sources
                     if sources:
@@ -562,13 +564,9 @@ def main():
                                 display_source(source, i)
                     
                     # Add to messages
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": full_response,
-                        "sources": sources
-                    })
+                    st.session_state.messages.append(message_data)
                     
-                    # Auto-save after each exchange
+                    # Auto-save
                     save_conversation(
                         st.session_state.current_chat_id,
                         st.session_state.messages,
@@ -579,42 +577,6 @@ def main():
                     
                 except Exception as e:
                     st.error(str(e))
-            else:
-                # Non-streaming response
-                with st.spinner("🔍 Consultando os livros espíritas..."):
-                    try:
-                        result = query_api(
-                            prompt, model_name, temperature, top_k, fetch_k,
-                            st.session_state.messages[:-1]
-                        )
-                        
-                        answer = result['answer']
-                        sources = result['sources']
-                        
-                        st.markdown(answer)
-                        
-                        if sources:
-                            with st.expander(f"📖 {len(sources)} Fontes Consultadas"):
-                                for i, source in enumerate(sources, 1):
-                                    display_source(source, i)
-                        
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer,
-                            "sources": sources
-                        })
-                        
-                        # Auto-save
-                        save_conversation(
-                            st.session_state.current_chat_id,
-                            st.session_state.messages,
-                            st.session_state.user_name
-                        )
-                        
-                        st.rerun()
-                        
-                    except Exception as e:
-                        st.error(str(e))
 
 if __name__ == "__main__":
     main()

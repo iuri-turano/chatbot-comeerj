@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -17,25 +17,121 @@ from priority_retriever import prioritized_search
 import torch
 import os
 import json
-from typing import List, Optional
+import asyncio
+import time
+import hashlib
+from typing import List, Optional, Dict, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from collections import deque, defaultdict
+import threading
+
+# ============================================================================
+# CONFIGURAÇÕES
+# ============================================================================
+
+MAX_CONCURRENT_REQUESTS = 4
+CACHE_SIZE = 500
+RATE_LIMIT_PER_MINUTE = 15
+
+# Modelos
+FAST_MODEL = "llama3.2:3b"      # Para preview rápido
+QUALITY_MODEL = "qwen2.5:7b"    # Para resposta final
 
 app = FastAPI(
     title="Assistente Espírita API",
-    description="Backend API para o Assistente Espírita com Ollama",
-    version="2.0.0"
+    description="Sistema com Preview Automático - Responde Rápido e Valida com Livros",
+    version="1.5.0"
 )
 
-# Enable CORS for Streamlit Cloud
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your Streamlit URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Global variables
+# ============================================================================
+# CACHE E RATE LIMITER
+# ============================================================================
+
+class ResponseCache:
+    def __init__(self, max_size=CACHE_SIZE):
+        self._cache = {}
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+        self.max_size = max_size
+    
+    def _hash_query(self, question: str, model: str, temp: float) -> str:
+        key = f"{question.lower().strip()}|{model}|{temp:.1f}"
+        return hashlib.md5(key.encode()).hexdigest()
+    
+    def get(self, question: str, model: str, temp: float) -> Optional[Dict]:
+        with self._lock:
+            cache_key = self._hash_query(question, model, temp)
+            if cache_key in self._cache:
+                self._hits += 1
+                return self._cache[cache_key].copy()
+            self._misses += 1
+            return None
+    
+    def set(self, question: str, model: str, temp: float, response: Dict):
+        with self._lock:
+            cache_key = self._hash_query(question, model, temp)
+            if len(self._cache) >= self.max_size:
+                oldest_key = next(iter(self._cache))
+                del self._cache[oldest_key]
+            self._cache[cache_key] = {**response, 'cached_at': datetime.now().isoformat()}
+    
+    def get_stats(self) -> Dict:
+        with self._lock:
+            total = self._hits + self._misses
+            hit_rate = (self._hits / total * 100) if total > 0 else 0
+            return {
+                'size': len(self._cache),
+                'hits': self._hits,
+                'misses': self._misses,
+                'hit_rate': f"{hit_rate:.1f}%"
+            }
+
+class RateLimiter:
+    def __init__(self, max_per_minute=RATE_LIMIT_PER_MINUTE):
+        self._requests = defaultdict(deque)
+        self._lock = threading.Lock()
+        self.max_per_minute = max_per_minute
+    
+    def check_rate_limit(self, ip: str) -> Tuple[bool, int]:
+        with self._lock:
+            now = time.time()
+            minute_ago = now - 60
+            requests = self._requests[ip]
+            while requests and requests[0] < minute_ago:
+                requests.popleft()
+            if len(requests) >= self.max_per_minute:
+                return False, 0
+            requests.append(now)
+            return True, self.max_per_minute - len(requests)
+
+# ============================================================================
+# GLOBAL INSTANCES
+# ============================================================================
+
+startup_time = time.time()
 vectorstore = None
+executor = ThreadPoolExecutor(max_workers=4)
+
+response_cache = ResponseCache(max_size=CACHE_SIZE)
+rate_limiter = RateLimiter(max_per_minute=RATE_LIMIT_PER_MINUTE)
+
+# LLMs
+fast_llm = None
+quality_llm = None
+
+# ============================================================================
+# MODELS
+# ============================================================================
 
 class Message(BaseModel):
     role: str
@@ -43,11 +139,12 @@ class Message(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str
-    model_name: str = "qwen2.5:7b"
     temperature: float = 0.3
     top_k: int = 3
     fetch_k: int = 15
     conversation_history: Optional[List[Message]] = None
+    use_cache: bool = True
+    enable_preview: bool = True  # Ativa/desativa preview
 
 class Source(BaseModel):
     content: str
@@ -58,44 +155,42 @@ class Source(BaseModel):
     display_name: str
 
 class QueryResponse(BaseModel):
+    task_id: str
     answer: str
     sources: list[Source]
+    processing_time: float
+    from_cache: bool = False
+    # Preview fields
+    has_preview: bool = False
+    preview_answer: Optional[str] = None
+    validation_notes: Optional[str] = None
 
-class StreamChunk(BaseModel):
-    type: str  # "token" or "sources" or "done"
-    content: Optional[str] = None
-    sources: Optional[list[Source]] = None
-
-class StatusResponse(BaseModel):
-    status: str
-    message: str
-    cuda_available: bool
-    gpu: str
-    vectorstore_loaded: bool
+# ============================================================================
+# STARTUP
+# ============================================================================
 
 @app.on_event("startup")
 async def startup_event():
-    """Load vectorstore on startup"""
-    global vectorstore
+    global vectorstore, fast_llm, quality_llm, startup_time
     
-    print("=" * 60)
-    print("🚀 Iniciando Assistente Espírita API v2.0")
-    print("=" * 60)
+    startup_time = time.time()
     
-    # Check if database exists
+    print("=" * 70)
+    print("🚀 Assistente Espírita API v1.5.0")
+    print("   Sistema com Preview Automático")
+    print("=" * 70)
+    
     if not os.path.exists(DB_DIR):
-        print(f"❌ Banco de dados não encontrado em: {DB_DIR}")
-        print(f"⚠️  Execute: python process_books.py")
+        print(f"❌ Banco de dados não encontrado: {DB_DIR}")
         return
     
-    print(f"📚 Carregando banco de dados vetorial de: {DB_DIR}")
-    
+    print("📚 Carregando vectorstore...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"📊 Dispositivo: {device}")
     
     if torch.cuda.is_available():
         print(f"🎮 GPU: {torch.cuda.get_device_name(0)}")
-        print(f"💾 VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        print(f"💾 VRAM: {vram_gb:.1f} GB")
     
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
@@ -107,166 +202,354 @@ async def startup_event():
         embedding_function=embeddings
     )
     
-    print("✅ Banco de dados carregado com sucesso!")
-    print("=" * 60)
-    print("🌐 API pronta em: http://localhost:8000")
-    print("📖 Documentação em: http://localhost:8000/docs")
-    print("=" * 60)
+    # Load LLMs
+    print("\n🤖 Carregando modelos...")
+    print(f"  1/2 {FAST_MODEL} (preview rápido)...")
+    fast_llm = Ollama(model=FAST_MODEL, temperature=0.3, num_ctx=4096)
+    print(f"      ✅ Carregado")
+    
+    print(f"  2/2 {QUALITY_MODEL} (resposta final)...")
+    quality_llm = Ollama(model=QUALITY_MODEL, temperature=0.3, num_ctx=CONTEXT_WINDOW)
+    print(f"      ✅ Carregado")
+    
+    print("\n✅ Sistema pronto!")
+    print("=" * 70)
+    print("💡 MODO PREVIEW:")
+    print("   1. LLM gera resposta rápida (conhecimento geral)")
+    print("   2. Sistema busca nos livros")
+    print("   3. LLM valida e corrige a resposta")
+    print("   4. Retorna: preview + resposta final + correções")
+    print("=" * 70)
+    print("🌐 API: http://localhost:8000")
+    print("📖 Docs: http://localhost:8000/docs")
+    print("=" * 70)
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0]
+    return request.client.host
 
 def build_context_with_history(conversation_history: List[Message], max_history: int = 5) -> str:
-    """Build conversation context from history"""
-    if not conversation_history or len(conversation_history) == 0:
+    if not conversation_history:
         return ""
-    
-    # Take last N messages (excluding current question)
-    recent_history = conversation_history[-max_history:] if len(conversation_history) > max_history else conversation_history
-    
-    context_parts = []
-    for msg in recent_history:
+    recent = conversation_history[-max_history:]
+    parts = []
+    for msg in recent:
         if msg.role == "user":
-            context_parts.append(f"Consulente: {msg.content}")
+            parts.append(f"Consulente: {msg.content}")
         elif msg.role == "assistant":
-            context_parts.append(f"Assistente: {msg.content}")
-    
-    return "\n".join(context_parts)
+            parts.append(f"Assistente: {msg.content}")
+    return "\n".join(parts)
 
-def create_llm_and_prompt(model_name: str, temperature: float):
-    """Create LLM and prompt template with conversation context support"""
-    
+def create_preview_prompt() -> PromptTemplate:
+    """Prompt para resposta prévia rápida (sem livros)"""
     template = """Você é um assistente especializado em Espiritismo e Doutrina Espírita.
 
-INSTRUÇÕES IMPORTANTES:
-1. Responda SEMPRE em português brasileiro correto e fluente
-2. DÊ PRIORIDADE às informações de "O Livro dos Espíritos" quando disponível
-3. Depois, priorize as outras obras fundamentais: O Evangelho Segundo o Espiritismo, O Livro dos Médiuns, A Gênese, O Céu e o Inferno, O que é o Espiritismo
-4. Use as Revistas Espíritas como complemento
-5. SEMPRE cite os livros de onde extraiu as informações (ex: "Segundo O Livro dos Espíritos, questão 150..." ou "Conforme O Evangelho Segundo o Espiritismo, capítulo 5...")
-6. Quando houver informações de múltiplas obras, CITE TODAS mas destaque O Livro dos Espíritos
-7. Faça correlações entre diferentes trechos quando relevante
-8. Reflita sobre as implicações dos ensinamentos apresentados
-9. Mantenha coerência com o contexto da conversa anterior
-10. Se a pergunta se referir a algo mencionado anteriormente, use esse contexto
-11. Apenas se não encontrar a resposta no contexto, diga claramente: "Não encontrei essa informação específica nos livros fornecidos"
+Responda esta pergunta com base no seu conhecimento geral sobre Espiritismo.
+Esta é uma RESPOSTA PRÉVIA que será validada depois com os livros da Codificação.
 
-HIERARQUIA DE FONTES (use nesta ordem de importância):
-1️⃣ O Livro dos Espíritos
-2️⃣ Obras complementares (Evangelho, Médiuns, Gênese, Céu e Inferno, O que é o Espiritismo)
-3️⃣ Revista Espírita
+Seja conciso (2-3 parágrafos) e correto.
 
 {conversation_context}
 
-CONTEXTO DOS LIVROS ESPÍRITAS (já ordenado por prioridade):
+PERGUNTA: {question}
+
+RESPOSTA PRÉVIA (baseada em conhecimento geral):"""
+
+    return PromptTemplate(
+        template=template,
+        input_variables=["conversation_context", "question"]
+    )
+
+def create_validation_prompt() -> PromptTemplate:
+    """Prompt para validar preview com os livros"""
+    template = """Você é um assistente especializado em Espiritismo e Doutrina Espírita.
+
+TAREFA: Validar e melhorar a resposta prévia usando os trechos dos livros.
+
+{conversation_context}
+
+PERGUNTA ORIGINAL: {question}
+
+RESPOSTA PRÉVIA (baseada em conhecimento geral):
+{preview_answer}
+
+TRECHOS DOS LIVROS ESPÍRITAS (priorizados):
 {context}
 
-PERGUNTA DO CONSULENTE: {question}
+INSTRUÇÕES:
+1. MANTENHA o que está correto na resposta prévia
+2. CORRIJA o que está errado ou impreciso
+3. ADICIONE citações específicas dos livros
+4. PRIORIZE O Livro dos Espíritos
+5. Seja mais detalhado que a prévia
 
-RESPOSTA (em português correto, reflexiva, priorizando O Livro dos Espíritos e citando todas as fontes):"""
+No final, adicione uma linha indicando:
+[VALIDAÇÃO: o que foi mantido, corrigido ou adicionado]
 
-    prompt = PromptTemplate(
+RESPOSTA FINAL VALIDADA:"""
+
+    return PromptTemplate(
         template=template,
-        input_variables=["conversation_context", "context", "question"]
+        input_variables=["conversation_context", "question", "preview_answer", "context"]
     )
-    
-    llm = Ollama(
-        model=model_name,
-        temperature=temperature,
-        num_ctx=CONTEXT_WINDOW,
-        system="Você é um especialista em Doutrina Espírita codificada por Allan Kardec. PRIORIZE sempre O Livro dos Espíritos como fonte principal. Responda em português brasileiro fluente e correto. Seja reflexivo, faça conexões entre os conceitos espíritas e sempre cite as fontes com precisão, dando destaque às obras fundamentais. Mantenha coerência com o histórico da conversa.",
-    )
-    
-    return llm, prompt
 
-@app.get("/", response_model=StatusResponse)
-async def root():
-    """Health check and status endpoint"""
-    return StatusResponse(
-        status="online",
-        message="Assistente Espírita API v2.0 - Backend rodando",
-        cuda_available=torch.cuda.is_available(),
-        gpu=torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
-        vectorstore_loaded=vectorstore is not None
-    )
+async def generate_preview(llm, prompt, question: str, conversation_context: str) -> str:
+    """Gera resposta prévia em thread separada"""
+    loop = asyncio.get_event_loop()
+    
+    def _generate():
+        formatted = prompt.format(
+            conversation_context=conversation_context,
+            question=question
+        )
+        return llm.invoke(formatted)
+    
+    return await loop.run_in_executor(executor, _generate)
+
+async def search_books_async(question: str, top_k: int, fetch_k: int) -> List:
+    """Busca nos livros de forma assíncrona"""
+    loop = asyncio.get_event_loop()
+    
+    def _search():
+        return prioritized_search(vectorstore, question, k=top_k, fetch_k=fetch_k)
+    
+    return await loop.run_in_executor(executor, _search)
+
+def extract_validation_notes(validated_answer: str) -> Tuple[str, str]:
+    """Extrai notas de validação da resposta"""
+    if "[VALIDAÇÃO:" in validated_answer:
+        parts = validated_answer.split("[VALIDAÇÃO:")
+        answer = parts[0].strip()
+        notes = parts[1].strip().rstrip("]")
+        return answer, notes
+    return validated_answer, ""
+
+# ============================================================================
+# STATUS ENDPOINTS
+# ============================================================================
+
+@app.get("/health")
+async def health():
+    """Health check with GPU info"""
+    cuda_available = torch.cuda.is_available()
+    gpu_name = "CPU"
+    if cuda_available:
+        gpu_name = torch.cuda.get_device_name(0)
+    
+    return {
+        "status": "healthy",
+        "cuda_available": cuda_available,
+        "gpu": gpu_name,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.get("/status")
+async def status():
+    cache_stats = response_cache.get_stats()
+    
+    # Check CUDA availability
+    cuda_available = torch.cuda.is_available()
+    gpu_name = "CPU"
+    if cuda_available:
+        gpu_name = torch.cuda.get_device_name(0)
+    
+    return {
+        "online": True,
+        "uptime_seconds": time.time() - startup_time,
+        "cuda_available": cuda_available,
+        "gpu": gpu_name,
+        "models_loaded": {
+            "fast": FAST_MODEL,
+            "quality": QUALITY_MODEL,
+            "both_ready": fast_llm is not None and quality_llm is not None
+        },
+        "cache": cache_stats,
+        "timestamp": datetime.now().isoformat()
+    }
+
+# ============================================================================
+# QUERY ENDPOINT COM PREVIEW AUTOMÁTICO
+# ============================================================================
 
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
-    """Process a question and return answer with sources"""
+async def query(request_body: QueryRequest, request: Request):
+    """
+    Endpoint principal com preview automático integrado
     
-    if vectorstore is None:
-        raise HTTPException(
-            status_code=503, 
-            detail="Banco de dados não carregado. Verifique os logs do servidor."
+    Fluxo:
+    1. Gera resposta prévia rápida (LLM sem livros)
+    2. Busca nos livros (paralelo)
+    3. Valida preview com os livros (LLM com contexto)
+    4. Retorna ambas + notas de validação
+    """
+    
+    if vectorstore is None or fast_llm is None or quality_llm is None:
+        raise HTTPException(status_code=503, detail="Sistema não carregado")
+    
+    # 1. RATE LIMIT
+    client_ip = get_client_ip(request)
+    allowed, remaining = rate_limiter.check_rate_limit(client_ip)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=f"Rate limit: {RATE_LIMIT_PER_MINUTE}/min")
+    
+    # 2. CHECK CACHE
+    if request_body.use_cache:
+        cached = response_cache.get(
+            request_body.question,
+            QUALITY_MODEL,
+            request_body.temperature
         )
+        if cached:
+            print(f"✅ CACHE HIT")
+            return QueryResponse(**cached)
+    
+    # 3. PROCESSAR COM PREVIEW
+    task_id = f"task_{int(time.time() * 1000)}"
+    start_time = time.time()
     
     try:
-        print(f"\n{'='*60}")
-        print(f"🔍 Nova pergunta: {request.question[:100]}...")
-        print(f"⚙️  Modelo: {request.model_name} | Temp: {request.temperature}")
-        
-        # Create LLM for this request
-        llm, prompt_template = create_llm_and_prompt(
-            request.model_name, 
-            request.temperature
-        )
-        
-        print(f"📖 Buscando nos livros espíritas...")
-        
-        # Search with priority and deduplication
-        sources = prioritized_search(
-            vectorstore, 
-            request.question, 
-            k=request.top_k, 
-            fetch_k=request.fetch_k
-        )
-        
-        print(f"✅ Encontradas {len(sources)} fontes relevantes")
-        
-        # Add priority metadata
-        for source in sources:
-            source_path = source.metadata.get('source', '')
-            source.metadata['priority'] = get_book_priority(source_path)
-        
-        # Build context from books
-        context = "\n\n---\n\n".join([
-            f"[Trecho {i+1} - {get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
-            for i, doc in enumerate(sources)
-        ])
+        print(f"\n{'='*70}")
+        print(f"❓ Pergunta: {request_body.question[:80]}...")
         
         # Build conversation context
         conversation_context = ""
-        if request.conversation_history and len(request.conversation_history) > 0:
-            history_text = build_context_with_history(request.conversation_history)
-            if history_text:
-                conversation_context = f"\nHISTÓRICO DA CONVERSA (para contexto):\n{history_text}\n"
+        if request_body.conversation_history:
+            history = build_context_with_history(request_body.conversation_history)
+            if history:
+                conversation_context = f"\nHISTÓRICO:\n{history}\n"
         
-        # Format prompt
-        formatted_prompt = prompt_template.format(
-            conversation_context=conversation_context,
-            context=context,
-            question=request.question
-        )
+        if request_body.enable_preview:
+            # ============================================================
+            # MODO PREVIEW: Resposta rápida + validação
+            # ============================================================
+            
+            print("⚡ Fase 1: Gerando preview + buscando livros (paralelo)...")
+            
+            # Preparar prompts
+            preview_prompt = create_preview_prompt()
+            
+            # Executar em paralelo: preview + busca
+            preview_task = generate_preview(
+                fast_llm,
+                preview_prompt,
+                request_body.question,
+                conversation_context
+            )
+            
+            search_task = search_books_async(
+                request_body.question,
+                request_body.top_k,
+                request_body.fetch_k
+            )
+            
+            # Aguardar ambos
+            preview_answer, sources = await asyncio.gather(preview_task, search_task)
+            
+            print(f"✅ Preview: {len(preview_answer)} chars")
+            print(f"✅ Fontes: {len(sources)} trechos")
+            
+            # Adicionar metadados de prioridade
+            for source in sources:
+                source_path = source.metadata.get('source', '')
+                source.metadata['priority'] = get_book_priority(source_path)
+            
+            # Construir contexto dos livros
+            context = "\n\n---\n\n".join([
+                f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
+                for doc in sources
+            ])
+            
+            # Fase 2: Validar com os livros
+            print("📚 Fase 2: Validando com os livros...")
+            
+            validation_prompt = create_validation_prompt()
+            formatted_validation = validation_prompt.format(
+                conversation_context=conversation_context,
+                question=request_body.question,
+                preview_answer=preview_answer,
+                context=context
+            )
+            
+            validated_answer = quality_llm.invoke(formatted_validation)
+            
+            # Extrair notas de validação
+            final_answer, validation_notes = extract_validation_notes(validated_answer)
+            
+            print(f"✅ Validação completa!")
+            
+        else:
+            # ============================================================
+            # MODO NORMAL: Somente busca + resposta
+            # ============================================================
+            
+            print("📚 Modo normal: Buscando nos livros...")
+            
+            sources = prioritized_search(
+                vectorstore,
+                request_body.question,
+                k=request_body.top_k,
+                fetch_k=request_body.fetch_k
+            )
+            
+            for source in sources:
+                source_path = source.metadata.get('source', '')
+                source.metadata['priority'] = get_book_priority(source_path)
+            
+            context = "\n\n---\n\n".join([
+                f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
+                for doc in sources
+            ])
+            
+            # Prompt simples
+            simple_template = """Você é um assistente especializado em Espiritismo.
+
+INSTRUÇÕES:
+1. Responda em português brasileiro
+2. PRIORIZE O Livro dos Espíritos
+3. SEMPRE cite as fontes com precisão
+
+{conversation_context}
+
+CONTEXTO DOS LIVROS:
+{context}
+
+PERGUNTA: {question}
+
+RESPOSTA:"""
+            
+            simple_prompt = PromptTemplate(
+                template=simple_template,
+                input_variables=["conversation_context", "context", "question"]
+            )
+            
+            formatted = simple_prompt.format(
+                conversation_context=conversation_context,
+                context=context,
+                question=request_body.question
+            )
+            
+            final_answer = quality_llm.invoke(formatted)
+            preview_answer = None
+            validation_notes = None
         
-        print(f"🤖 Gerando resposta com {request.model_name}...")
-        
-        # Get answer from LLM
-        answer = llm.invoke(formatted_prompt)
-        
-        print(f"✅ Resposta gerada com sucesso!")
-        print(f"{'='*60}\n")
-        
-        # Format sources for response
+        # Formatar sources
         formatted_sources = []
         for source in sources:
             source_path = source.metadata.get('source', 'Desconhecido')
             priority = source.metadata.get('priority', 10)
             
-            if priority >= 100:
-                priority_label = "PRIORIDADE MÁXIMA"
-            elif priority >= 70:
-                priority_label = "OBRA FUNDAMENTAL"
-            elif priority >= 40:
-                priority_label = "COMPLEMENTAR"
-            else:
-                priority_label = "OUTRAS OBRAS"
+            priority_label = (
+                "PRIORIDADE MÁXIMA" if priority >= 100 else
+                "OBRA FUNDAMENTAL" if priority >= 70 else
+                "COMPLEMENTAR" if priority >= 40 else
+                "OUTRAS OBRAS"
+            )
             
             formatted_sources.append(Source(
                 content=source.page_content[:500],
@@ -277,119 +560,37 @@ async def query(request: QueryRequest):
                 display_name=get_book_display_name(source_path)
             ))
         
-        return QueryResponse(
-            answer=answer,
-            sources=formatted_sources
-        )
+        processing_time = time.time() - start_time
+        print(f"✅ Concluído em {processing_time:.2f}s")
+        print(f"{'='*70}\n")
+        
+        response_data = {
+            "task_id": task_id,
+            "answer": final_answer,
+            "sources": [s.dict() for s in formatted_sources],
+            "processing_time": processing_time,
+            "from_cache": False,
+            "has_preview": request_body.enable_preview,
+            "preview_answer": preview_answer,
+            "validation_notes": validation_notes
+        }
+        
+        # Cache
+        if request_body.use_cache:
+            response_cache.set(
+                request_body.question,
+                QUALITY_MODEL,
+                request_body.temperature,
+                response_data
+            )
+        
+        return QueryResponse(**response_data)
         
     except Exception as e:
-        print(f"❌ Erro ao processar pergunta: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erro ao processar: {str(e)}")
-
-@app.post("/query_stream")
-async def query_stream(request: QueryRequest):
-    """Process a question and stream the response"""
-    
-    if vectorstore is None:
-        raise HTTPException(
-            status_code=503, 
-            detail="Banco de dados não carregado. Verifique os logs do servidor."
-        )
-    
-    async def generate():
-        try:
-            print(f"\n{'='*60}")
-            print(f"🔍 Nova pergunta (streaming): {request.question[:100]}...")
-            
-            # Create LLM for this request
-            llm, prompt_template = create_llm_and_prompt(
-                request.model_name, 
-                request.temperature
-            )
-            
-            # Search with priority
-            sources = prioritized_search(
-                vectorstore, 
-                request.question, 
-                k=request.top_k, 
-                fetch_k=request.fetch_k
-            )
-            
-            # Add priority metadata
-            for source in sources:
-                source_path = source.metadata.get('source', '')
-                source.metadata['priority'] = get_book_priority(source_path)
-            
-            # Build context
-            context = "\n\n---\n\n".join([
-                f"[Trecho {i+1} - {get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
-                for i, doc in enumerate(sources)
-            ])
-            
-            # Build conversation context
-            conversation_context = ""
-            if request.conversation_history and len(request.conversation_history) > 0:
-                history_text = build_context_with_history(request.conversation_history)
-                if history_text:
-                    conversation_context = f"\nHISTÓRICO DA CONVERSA (para contexto):\n{history_text}\n"
-            
-            # Format prompt
-            formatted_prompt = prompt_template.format(
-                conversation_context=conversation_context,
-                context=context,
-                question=request.question
-            )
-            
-            # Stream tokens
-            for chunk in llm.stream(formatted_prompt):
-                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
-            
-            # Send sources at the end
-            formatted_sources = []
-            for source in sources:
-                source_path = source.metadata.get('source', 'Desconhecido')
-                priority = source.metadata.get('priority', 10)
-                
-                if priority >= 100:
-                    priority_label = "PRIORIDADE MÁXIMA"
-                elif priority >= 70:
-                    priority_label = "OBRA FUNDAMENTAL"
-                elif priority >= 40:
-                    priority_label = "COMPLEMENTAR"
-                else:
-                    priority_label = "OUTRAS OBRAS"
-                
-                formatted_sources.append({
-                    "content": source.page_content[:500],
-                    "source": os.path.basename(source_path),
-                    "page": source.metadata.get('page', 0),
-                    "priority": priority,
-                    "priority_label": priority_label,
-                    "display_name": get_book_display_name(source_path)
-                })
-            
-            yield f"data: {json.dumps({'type': 'sources', 'sources': formatted_sources})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            
-        except Exception as e:
-            print(f"❌ Erro no streaming: {str(e)}")
-            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-    
-    return StreamingResponse(generate(), media_type="text/event-stream")
-
-@app.get("/models")
-async def list_models():
-    """List available Ollama models"""
-    import subprocess
-    try:
-        result = subprocess.run(['ollama', 'list'], capture_output=True, text=True)
-        return {"status": "success", "models": result.stdout}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+        print(f"❌ Erro: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n🚀 Iniciando servidor API v2.0...")
-    print("📍 Rodando em: http://localhost:8000")
-    print("📖 Documentação: http://localhost:8000/docs\n")
+    print("\n🚀 Iniciando API v1.5.0 (Preview Automático)...")
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
