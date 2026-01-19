@@ -5,7 +5,7 @@ load_dotenv()
 
 # Local model configuration
 LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", "qwen2.5:7b")
-DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.1"))
+DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.3"))
 
 # Paths
 BOOKS_DIR = "books"
@@ -14,8 +14,8 @@ DB_DIR = "database"
 # Model parameters
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
-TOP_K = 5
-CONTEXT_WINDOW = 4096
+TOP_K = 3  # Changed from 5 to 3 for better performance
+CONTEXT_WINDOW = 8192  # Increased from 4096 to 8192 for conversation context
 
 # Embedding model
 EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"

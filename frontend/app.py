@@ -1,16 +1,167 @@
 import streamlit as st
 import requests
 from feedback_system import save_feedback, get_feedback_stats
+from chat_history import (
+    save_conversation, 
+    load_conversation, 
+    get_recent_conversations,
+    generate_chat_id,
+    export_conversation_to_text,
+    delete_conversation
+)
 import os
+import time
 
 # Page configuration
 st.set_page_config(
     page_title="Assistente Espírita",
     page_icon="📚",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# API Configuration - Try secrets first, then env, then default
+# Custom CSS for chat bubbles, avatars, and better UI
+st.markdown("""
+<style>
+    /* Main container */
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    
+    /* Chat message styling */
+    .stChatMessage {
+        padding: 1rem !important;
+        border-radius: 10px !important;
+        margin-bottom: 1rem !important;
+    }
+    
+    /* User message bubble */
+    .stChatMessage[data-testid="user-message"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        color: white !important;
+    }
+    
+    /* Assistant message bubble */
+    .stChatMessage[data-testid="assistant-message"] {
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%) !important;
+        color: white !important;
+    }
+    
+    /* Source cards */
+    .source-card {
+        background-color: rgba(255, 255, 255, 0.05);
+        border-left: 4px solid #667eea;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        border-radius: 8px;
+    }
+    
+    .source-card.priority-max {
+        border-left-color: #ffd700;
+    }
+    
+    .source-card.priority-high {
+        border-left-color: #ff6b6b;
+    }
+    
+    .source-card.priority-medium {
+        border-left-color: #4ecdc4;
+    }
+    
+    /* Priority badges */
+    .priority-badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-right: 0.5rem;
+    }
+    
+    .badge-max {
+        background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
+        color: #333;
+    }
+    
+    .badge-high {
+        background: linear-gradient(135deg, #ff6b6b 0%, #ff8e8e 100%);
+        color: white;
+    }
+    
+    .badge-medium {
+        background: linear-gradient(135deg, #4ecdc4 0%, #44a3a3 100%);
+        color: white;
+    }
+    
+    .badge-low {
+        background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);
+        color: white;
+    }
+    
+    /* Feedback buttons */
+    .stButton button {
+        border-radius: 8px !important;
+        font-weight: 500 !important;
+        transition: all 0.3s ease !important;
+    }
+    
+    .stButton button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+    }
+    
+    /* Sidebar styling */
+    .css-1d391kg {
+        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        font-weight: 600 !important;
+        color: #667eea !important;
+    }
+    
+    /* Chat input */
+    .stChatInputContainer {
+        border-top: 2px solid #667eea;
+        padding-top: 1rem;
+    }
+    
+    /* Conversation history item */
+    .conv-item {
+        padding: 0.75rem;
+        margin: 0.5rem 0;
+        border-radius: 8px;
+        background-color: rgba(255, 255, 255, 0.05);
+        cursor: pointer;
+        transition: all 0.3s ease;
+    }
+    
+    .conv-item:hover {
+        background-color: rgba(255, 255, 255, 0.1);
+        transform: translateX(5px);
+    }
+    
+    /* Streaming indicator */
+    .streaming-indicator {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background-color: #4ecdc4;
+        animation: pulse 1.5s ease-in-out infinite;
+        margin-right: 8px;
+    }
+    
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# API Configuration
 try:
     API_URL = st.secrets["API_URL"]
 except:
@@ -24,9 +175,18 @@ def check_api_status():
     except Exception as e:
         return None
 
-def query_api(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int):
-    """Send query to API"""
+def query_api(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None):
+    """Send query to API with conversation history"""
     try:
+        # Prepare conversation history (exclude sources for API call)
+        api_history = []
+        if conversation_history:
+            for msg in conversation_history:
+                api_history.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+        
         response = requests.post(
             f"{API_URL}/query",
             json={
@@ -34,22 +194,119 @@ def query_api(question: str, model_name: str, temperature: float, top_k: int, fe
                 "model_name": model_name,
                 "temperature": temperature,
                 "top_k": top_k,
-                "fetch_k": fetch_k
+                "fetch_k": fetch_k,
+                "conversation_history": api_history
             },
-            timeout=120  # 2 minutes timeout
+            timeout=600  # 10 minutes timeout
         )
         response.raise_for_status()
         return response.json()
     except requests.exceptions.Timeout:
-        raise Exception("⏱️ Timeout: A resposta demorou muito. Tente novamente.")
+        raise Exception("⏱️ Timeout: A resposta demorou muito. Tente novamente ou reduza o número de trechos.")
     except requests.exceptions.ConnectionError:
         raise Exception("🔌 Erro de conexão: Verifique se o backend está rodando.")
     except Exception as e:
         raise Exception(f"❌ Erro: {str(e)}")
 
+def stream_api_response(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None):
+    """Stream response from API"""
+    try:
+        # Prepare conversation history
+        api_history = []
+        if conversation_history:
+            for msg in conversation_history:
+                api_history.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+        
+        response = requests.post(
+            f"{API_URL}/query_stream",
+            json={
+                "question": question,
+                "model_name": model_name,
+                "temperature": temperature,
+                "top_k": top_k,
+                "fetch_k": fetch_k,
+                "conversation_history": api_history
+            },
+            stream=True,
+            timeout=600  # 10 minutes timeout
+        )
+        response.raise_for_status()
+        
+        full_text = ""
+        sources = None
+        
+        for line in response.iter_lines():
+            if line:
+                line = line.decode('utf-8')
+                if line.startswith('data: '):
+                    import json
+                    data = json.loads(line[6:])
+                    
+                    if data['type'] == 'token':
+                        full_text += data['content']
+                        yield data['content'], None
+                    elif data['type'] == 'sources':
+                        sources = data['sources']
+                    elif data['type'] == 'done':
+                        break
+                    elif data['type'] == 'error':
+                        raise Exception(data['content'])
+        
+        return full_text, sources
+        
+    except requests.exceptions.Timeout:
+        raise Exception("⏱️ Timeout: A resposta demorou muito.")
+    except Exception as e:
+        raise Exception(f"❌ Erro: {str(e)}")
+
+def display_source(source: dict, index: int):
+    """Display a source with nice formatting"""
+    priority_classes = {
+        "PRIORIDADE MÁXIMA": ("priority-max", "badge-max", "🥇"),
+        "OBRA FUNDAMENTAL": ("priority-high", "badge-high", "🥈"),
+        "COMPLEMENTAR": ("priority-medium", "badge-medium", "🥉"),
+        "OUTRAS OBRAS": ("priority-low", "badge-low", "📄")
+    }
+    
+    card_class, badge_class, icon = priority_classes.get(
+        source['priority_label'], 
+        ("priority-low", "badge-low", "📄")
+    )
+    
+    st.markdown(f"""
+    <div class="source-card {card_class}">
+        <div>
+            <span class="priority-badge {badge_class}">{icon} {source['priority_label']}</span>
+            <strong>Fonte {index}</strong>
+        </div>
+        <div style="margin-top: 0.5rem; font-size: 0.9rem; opacity: 0.9;">
+            {source['content'][:500]}{"..." if len(source['content']) > 500 else ""}
+        </div>
+        <div style="margin-top: 0.5rem; font-style: italic; font-size: 0.85rem; opacity: 0.8;">
+            {source['display_name']} | Pág: {source['page']}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 def main():
-    st.title("📚 Assistente Espírita")
-    st.markdown("Faça perguntas sobre Espiritismo baseadas nas obras da Codificação")
+    # Initialize session state
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "current_chat_id" not in st.session_state:
+        st.session_state.current_chat_id = generate_chat_id()
+    if "user_name" not in st.session_state:
+        st.session_state.user_name = "Anônimo"
+    if "theme" not in st.session_state:
+        st.session_state.theme = "dark"
+    
+    # Header
+    col1, col2 = st.columns([6, 1])
+    with col1:
+        st.title("📚 Assistente Espírita")
+        st.caption("Pergunte sobre a Doutrina Espírita baseada nas obras da Codificação")
     
     # Check API status
     api_status = check_api_status()
@@ -64,33 +321,32 @@ def main():
                 st.info(f"🎮 {api_status.get('gpu', 'GPU')}")
             else:
                 st.warning("💻 CPU Mode")
-            
-            if not api_status.get('vectorstore_loaded'):
-                st.error("⚠️ Banco de dados não carregado")
         else:
             st.error("❌ Backend Offline")
             st.code(f"API URL: {API_URL}")
-            st.info("💡 Verifique se o backend está rodando")
         
         st.markdown("---")
         
+        # User identification
         st.header("👤 Identificação")
         user_name = st.text_input(
-            "Seu nome (opcional):",
-            value="",
-            placeholder="Ex: João Silva",
-            help="Seu nome será usado para identificar seus feedbacks e ajudar a melhorar o assistente"
+            "Seu nome:",
+            value=st.session_state.user_name,
+            placeholder="Ex: João Silva"
         )
-        
-        if not user_name:
-            user_name = "Anônimo"
+        if user_name:
+            st.session_state.user_name = user_name
         
         st.markdown("---")
         
-        st.header("⚙️ Configurações do Modelo")
+        # Model settings
+        st.header("⚙️ Configurações")
         
-        st.markdown("**Modelo:** *qwen2.5:7b*")
-        st.caption("Modelo otimizado para português e respostas fiéis aos textos")
+        model_name = st.selectbox(
+            "Modelo:",
+            ["qwen2.5:7b", "llama3.2:3b", "llama3.2:1b"],
+            help="qwen2.5:7b recomendado para melhor qualidade em português"
+        )
         
         temperature = st.slider(
             "Temperatura:",
@@ -98,136 +354,152 @@ def main():
             max_value=1.0,
             value=0.3,
             step=0.05,
-            help="**Temperatura** controla a criatividade das respostas:\n\n"
-                 "• **Baixa (0.1-0.3)**: Respostas mais objetivas e fiéis ao texto\n"
-                 "• **Média (0.3-0.5)**: Equilíbrio entre fidelidade e reflexão\n"
-                 "• **Alta (0.5-1.0)**: Respostas mais elaboradas e reflexivas\n\n"
-                 "**Recomendado**: 0.3 para máxima fidelidade aos livros"
+            help="Controla criatividade. 0.3 = mais fiel aos textos"
         )
         
         top_k = st.slider(
             "Nº de trechos:",
-            min_value=3,
-            max_value=15,
-            value=8,
+            min_value=1,
+            max_value=10,
+            value=3,
             step=1,
-            help="**Número de trechos** define quantos excertos dos livros serão usados para responder:\n\n"
-                 "• **Menos trechos (3-5)**: Respostas mais diretas e focadas\n"
-                 "• **Mais trechos (8-12)**: Respostas com mais correlações e contexto\n\n"
-                 "**Recomendado**: 8 trechos para bom equilíbrio"
+            help="Quantos trechos dos livros usar (padrão: 3)"
         )
         
-        with st.expander("⚙️ Configurações Avançadas"):
+        with st.expander("⚙️ Avançado"):
             fetch_k = st.slider(
                 "Busca inicial:",
                 min_value=top_k,
-                max_value=50,
-                value=20,
-                step=5,
-                help="**Busca inicial** determina quantos trechos são buscados antes da priorização:\n\n"
-                     "• Quanto maior, mais chance de encontrar trechos de O Livro dos Espíritos\n"
-                     "• Depois da busca, os trechos são reordenados por prioridade\n"
-                     "• Os melhores são selecionados (quantidade definida em 'Nº de trechos')\n\n"
-                     "**Recomendado**: 20 para boa cobertura"
+                max_value=30,
+                value=15,
+                step=5
+            )
+            
+            enable_streaming = st.checkbox(
+                "Resposta progressiva",
+                value=True,
+                help="Mostra a resposta conforme é gerada"
             )
         
         st.markdown("---")
         
-        st.header("📖 Hierarquia de Fontes")
-        st.markdown("""
-        O sistema prioriza as fontes nesta ordem:
+        # Conversation management
+        st.header("💬 Conversas")
         
-        **🥇 Prioridade Máxima:**  
-        • O Livro dos Espíritos
+        col_new, col_save = st.columns(2)
         
-        **🥈 Obras Fundamentais:**  
-        • O Evangelho Segundo o Espiritismo  
-        • O Livro dos Médiuns  
-        • A Gênese  
-        • O Céu e o Inferno  
-        • O que é o Espiritismo
+        with col_new:
+            if st.button("🆕 Nova Conversa", use_container_width=True):
+                if len(st.session_state.messages) > 0:
+                    # Save current conversation
+                    save_conversation(
+                        st.session_state.current_chat_id,
+                        st.session_state.messages,
+                        st.session_state.user_name
+                    )
+                # Start new chat
+                st.session_state.messages = []
+                st.session_state.current_chat_id = generate_chat_id()
+                st.rerun()
         
-        **🥉 Complementar:**  
-        • Revistas Espíritas (1858-1869)
-        """)
+        with col_save:
+            if st.button("💾 Salvar", use_container_width=True, disabled=len(st.session_state.messages) == 0):
+                save_conversation(
+                    st.session_state.current_chat_id,
+                    st.session_state.messages,
+                    st.session_state.user_name
+                )
+                st.success("✅ Salva!")
+                time.sleep(1)
+                st.rerun()
+        
+        # Recent conversations
+        recent_convs = get_recent_conversations(10)
+        
+        if recent_convs:
+            st.subheader("📜 Conversas Recentes")
+            
+            for conv in recent_convs:
+                with st.container():
+                    col_title, col_action = st.columns([4, 1])
+                    
+                    with col_title:
+                        if st.button(
+                            f"💬 {conv['title'][:30]}...",
+                            key=f"load_{conv['chat_id']}",
+                            use_container_width=True
+                        ):
+                            # Load conversation
+                            loaded = load_conversation(conv['chat_id'])
+                            if loaded:
+                                st.session_state.messages = loaded['messages']
+                                st.session_state.current_chat_id = conv['chat_id']
+                                st.rerun()
+                    
+                    with col_action:
+                        if st.button("🗑️", key=f"del_{conv['chat_id']}"):
+                            delete_conversation(conv['chat_id'])
+                            st.rerun()
+                    
+                    st.caption(f"{conv['message_count']} msgs • {conv['created_at'][:10]}")
         
         st.markdown("---")
         
-        st.header("💡 Como Usar")
+        # Help
+        st.header("💡 Dicas")
         st.markdown("""
         **Para melhores resultados:**
         
-        ✅ Faça perguntas claras e específicas  
-        ✅ Verifique sempre as fontes citadas  
-        ✅ Compare com os livros originais  
-        ✅ Deixe feedback sobre as respostas
+        ✅ Perguntas claras e específicas  
+        ✅ Verifique as fontes citadas  
+        ✅ Compare com os livros originais
         
-        **Exemplos de perguntas:**
+        **Exemplos:**
         • O que é o perispírito?
-        • O que o Espiritismo diz sobre o suicídio?
-        • Qual a diferença entre médium e sensitivo?
+        • Sobre o suicídio segundo o Espiritismo
+        • Diferença entre médium e sensitivo
         """)
-    
-    # Initialize session state
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
     
     # Display chat history
     for idx, message in enumerate(st.session_state.messages):
-        with st.chat_message(message["role"]):
+        with st.chat_message(message["role"], avatar="🧑" if message["role"] == "user" else "🤖"):
             st.markdown(message["content"])
             
+            # Show sources
             if "sources" in message and message["sources"]:
-                with st.expander("📖 Fontes Consultadas"):
+                with st.expander(f"📖 {len(message['sources'])} Fontes Consultadas"):
                     for i, source in enumerate(message["sources"], 1):
-                        icons = {
-                            "PRIORIDADE MÁXIMA": "🥇",
-                            "OBRA FUNDAMENTAL": "🥈",
-                            "COMPLEMENTAR": "🥉",
-                            "OUTRAS OBRAS": "📄"
-                        }
-                        
-                        icon = icons.get(source['priority_label'], "📄")
-                        
-                        st.markdown(f"**{icon} Fonte {i}:** {source['priority_label']}")
-                        st.text(source['content'][:500] + "...")
-                        st.markdown(f"*{source['display_name']} | Pág: {source['page']}*")
-                        st.markdown("---")
+                        display_source(source, i)
             
-            # Feedback
+            # Feedback section
             if message["role"] == "assistant" and "feedback_given" not in message:
                 st.markdown("---")
                 st.markdown("**📝 Esta resposta foi útil?**")
-                st.caption("Seu feedback nos ajuda a melhorar o assistente")
                 
                 feedback_key = f"feedback_{idx}"
                 
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    if st.button("👍 Boa", key=f"good_{idx}", use_container_width=True, 
-                                help="Resposta correta, bem citada e coerente"):
+                    if st.button("👍 Boa", key=f"good_{idx}", use_container_width=True):
                         st.session_state[feedback_key] = "good"
                 
                 with col2:
-                    if st.button("😐 Regular", key=f"neutral_{idx}", use_container_width=True,
-                                help="Resposta aceitável mas pode melhorar"):
+                    if st.button("😐 Regular", key=f"neutral_{idx}", use_container_width=True):
                         st.session_state[feedback_key] = "neutral"
                 
                 with col3:
-                    if st.button("👎 Ruim", key=f"bad_{idx}", use_container_width=True,
-                                help="Resposta incorreta, mal citada ou confusa"):
+                    if st.button("👎 Ruim", key=f"bad_{idx}", use_container_width=True):
                         st.session_state[feedback_key] = "bad"
                 
                 if feedback_key in st.session_state:
                     rating = st.session_state[feedback_key]
                     
                     comment = st.text_area(
-                        "Comentário (opcional, mas muito valioso!):",
-                        placeholder="Exemplos:\n• 'Faltou citar O Livro dos Espíritos'\n• 'Excelente correlação entre as obras'\n• 'Erros de português no segundo parágrafo'\n• 'Não respondeu exatamente o que foi perguntado'",
+                        "Comentário (opcional):",
+                        placeholder="Compartilhe sua opinião...",
                         key=f"comment_{idx}",
-                        height=100,
-                        help="Comentários detalhados nos ajudam a identificar problemas específicos e melhorar o sistema"
+                        height=80
                     )
                     
                     if st.button("✅ Enviar Feedback", key=f"submit_{idx}"):
@@ -241,61 +513,108 @@ def main():
                             keywords=[],
                             rating=rating,
                             comment=comment,
-                            user_name=user_name
+                            user_name=st.session_state.user_name
                         )
                         
                         st.session_state.messages[idx]["feedback_given"] = True
-                        st.success("✅ Obrigado pelo feedback!")
+                        st.success("✅ Obrigado!")
+                        time.sleep(1)
                         st.rerun()
     
-    # User input
+    # Chat input
     if prompt := st.chat_input("Digite sua pergunta sobre Espiritismo..."):
         if not api_status:
             st.error("❌ Backend offline. Não é possível processar perguntas.")
-            st.info("💡 Verifique se o servidor backend está rodando em segundo plano")
             return
         
+        # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
+        
+        with st.chat_message("user", avatar="🧑"):
             st.markdown(prompt)
         
-        with st.chat_message("assistant"):
-            with st.spinner("🔍 Consultando os livros espíritas..."):
+        # Get assistant response
+        with st.chat_message("assistant", avatar="🤖"):
+            if enable_streaming:
+                # Streaming response
+                response_placeholder = st.empty()
+                full_response = ""
+                sources = None
+                
                 try:
-                    result = query_api(prompt, "qwen2.5:7b", temperature, top_k, fetch_k)
+                    with st.spinner("🔍 Consultando os livros..."):
+                        for chunk, chunk_sources in stream_api_response(
+                            prompt, model_name, temperature, top_k, fetch_k,
+                            st.session_state.messages[:-1]  # Exclude current question
+                        ):
+                            if chunk:
+                                full_response += chunk
+                                response_placeholder.markdown(full_response + "▌")
+                            if chunk_sources:
+                                sources = chunk_sources
+                        
+                        response_placeholder.markdown(full_response)
                     
-                    answer = result['answer']
-                    sources = result['sources']
-                    
-                    st.markdown(answer)
-                    
+                    # Show sources
                     if sources:
-                        with st.expander("📖 Fontes Consultadas (ordenadas por prioridade)"):
+                        with st.expander(f"📖 {len(sources)} Fontes Consultadas"):
                             for i, source in enumerate(sources, 1):
-                                icons = {
-                                    "PRIORIDADE MÁXIMA": "🥇",
-                                    "OBRA FUNDAMENTAL": "🥈",
-                                    "COMPLEMENTAR": "🥉",
-                                    "OUTRAS OBRAS": "📄"
-                                }
-                                
-                                icon = icons.get(source['priority_label'], "📄")
-                                
-                                st.markdown(f"**{icon} Fonte {i}:** {source['priority_label']}")
-                                st.text(source['content'][:500] + "...")
-                                st.markdown(f"*{source['display_name']} | Pág: {source['page']}*")
-                                st.markdown("---")
+                                display_source(source, i)
                     
+                    # Add to messages
                     st.session_state.messages.append({
                         "role": "assistant",
-                        "content": answer,
+                        "content": full_response,
                         "sources": sources
                     })
+                    
+                    # Auto-save after each exchange
+                    save_conversation(
+                        st.session_state.current_chat_id,
+                        st.session_state.messages,
+                        st.session_state.user_name
+                    )
                     
                     st.rerun()
                     
                 except Exception as e:
                     st.error(str(e))
+            else:
+                # Non-streaming response
+                with st.spinner("🔍 Consultando os livros espíritas..."):
+                    try:
+                        result = query_api(
+                            prompt, model_name, temperature, top_k, fetch_k,
+                            st.session_state.messages[:-1]
+                        )
+                        
+                        answer = result['answer']
+                        sources = result['sources']
+                        
+                        st.markdown(answer)
+                        
+                        if sources:
+                            with st.expander(f"📖 {len(sources)} Fontes Consultadas"):
+                                for i, source in enumerate(sources, 1):
+                                    display_source(source, i)
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": sources
+                        })
+                        
+                        # Auto-save
+                        save_conversation(
+                            st.session_state.current_chat_id,
+                            st.session_state.messages,
+                            st.session_state.user_name
+                        )
+                        
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(str(e))
 
 if __name__ == "__main__":
     main()
