@@ -108,13 +108,32 @@ st.markdown("""
         color: white;
     }
     
+    /* Typing animation */
+    .typing-cursor {
+        display: inline-block;
+        width: 2px;
+        height: 1em;
+        background-color: currentColor;
+        margin-left: 2px;
+        animation: blink 1s step-end infinite;
+    }
+
+    @keyframes blink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0; }
+    }
+
+    .typing-text {
+        display: inline;
+    }
+
     /* Feedback buttons */
     .stButton button {
         border-radius: 8px !important;
         font-weight: 500 !important;
         transition: all 0.3s ease !important;
     }
-    
+
     .stButton button:hover {
         transform: translateY(-2px) !important;
         box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
@@ -277,6 +296,16 @@ def query_api(question: str, model_name: str, temperature: float, top_k: int, fe
         raise Exception("🔌 Erro de conexão: Verifique se o backend está rodando.")
     except Exception as e:
         raise Exception(f"❌ Erro: {str(e)}")
+
+def display_text_with_typing(text: str, placeholder, delay: float = 0.01):
+    """Display text with typing animation effect"""
+    displayed_text = ""
+    for char in text:
+        displayed_text += char
+        placeholder.markdown(displayed_text + '<span class="typing-cursor"></span>', unsafe_allow_html=True)
+        time.sleep(delay)
+    # Final display without cursor
+    placeholder.markdown(text, unsafe_allow_html=True)
 
 def display_source(source: dict, index: int):
     """Display a source with nice formatting"""
@@ -628,12 +657,16 @@ def main():
                         data = event['data']
 
                         if event_type == 'preview':
-                            # Show preview immediately
+                            # Show preview with typing animation
                             preview_answer = data['answer']
                             with preview_placeholder.container():
                                 st.markdown('<div class="preview-box">', unsafe_allow_html=True)
                                 st.markdown("**💭 Resposta inicial:**")
-                                st.markdown(preview_answer)
+
+                                # Create placeholder for typing animation
+                                typing_placeholder = st.empty()
+                                display_text_with_typing(preview_answer, typing_placeholder, delay=0.005)
+
                                 st.caption("_Aguarde... consultando os livros para validação._")
                                 st.markdown('</div>', unsafe_allow_html=True)
 
@@ -660,7 +693,10 @@ def main():
                                 st.markdown('</div>', unsafe_allow_html=True)
 
                                 st.markdown("**✅ Resposta fundamentada:**")
-                                st.markdown(final_answer)
+
+                                # Typing animation for final answer
+                                final_typing_placeholder = st.empty()
+                                display_text_with_typing(final_answer, final_typing_placeholder, delay=0.003)
 
                                 if validation_notes:
                                     st.markdown(f"""
