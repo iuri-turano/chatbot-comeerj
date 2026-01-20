@@ -252,10 +252,17 @@ def create_preview_prompt() -> PromptTemplate:
 
 {conversation_context}
 
-Responda a pergunta atual com base no seu conhecimento geral sobre Espiritismo.
-Esta é uma RESPOSTA PRÉVIA que será validada depois com os livros da Codificação.
+IMPORTANTE: Você DEVE responder APENAS perguntas relacionadas a:
+- Espiritismo e Doutrina Espírita
+- Allan Kardec e a Codificação Espírita
+- Temas espirituais, religião, filosofia relacionados ao Espiritismo
+- Mediunidade, perispírito, reencarnação, evolução espiritual
+- Moral, ética e ensinamentos dos Espíritos
 
-INSTRUÇÕES IMPORTANTES:
+Se a pergunta NÃO for relacionada a estes temas, responda EXATAMENTE:
+"Desculpe, sou um assistente especializado em Espiritismo e Doutrina Espírita. Não posso responder perguntas sobre outros assuntos. Por favor, faça uma pergunta relacionada ao Espiritismo."
+
+Se a pergunta for sobre Espiritismo, siga estas instruções:
 1. Responda APENAS a pergunta atual (não repita respostas anteriores)
 2. Use o histórico APENAS se a pergunta atual fizer referência direta a algo anterior (ex: "e sobre isso?", "pode explicar melhor?", "qual a diferença?")
 3. Se a pergunta atual for completamente nova e independente, IGNORE o histórico
@@ -287,7 +294,14 @@ RESPOSTA PRÉVIA (baseada em conhecimento geral):
 TRECHOS DOS LIVROS ESPÍRITAS (priorizados):
 {context}
 
-INSTRUÇÕES CRÍTICAS:
+RESTRIÇÃO DE ESCOPO:
+Se a resposta prévia indica que a pergunta está FORA DO ESCOPO do Espiritismo (contém a mensagem "Desculpe, sou um assistente especializado..."), você DEVE:
+1. Manter EXATAMENTE a mesma mensagem de rejeição
+2. NÃO tentar responder a pergunta
+3. NÃO adicionar notas de validação
+4. Retornar apenas a mensagem de rejeição
+
+Se a pergunta for sobre Espiritismo, siga estas INSTRUÇÕES CRÍTICAS:
 1. Responda APENAS a pergunta atual - NUNCA repita respostas de perguntas anteriores
 2. Use o histórico APENAS se a pergunta atual fizer referência direta ao contexto anterior
 3. Se a pergunta for completamente nova e independente, trate-a isoladamente
@@ -433,6 +447,17 @@ async def query_stream(request_body: QueryRequest, request: Request):
             # Enviar preview
             yield f"event: preview\n"
             yield f"data: {json.dumps({'answer': preview_answer, 'task_id': task_id}, ensure_ascii=False)}\n\n"
+
+            # Check if question is out of scope
+            if "Desculpe, sou um assistente especializado" in preview_answer:
+                # Question is off-topic, skip book search and validation
+                processing_time = time.time() - start_time
+                yield f"event: answer\n"
+                yield f"data: {json.dumps({'answer': preview_answer, 'validation_notes': None, 'processing_time': processing_time, 'out_of_scope': True}, ensure_ascii=False)}\n\n"
+
+                yield f"event: done\n"
+                yield f"data: {json.dumps({'task_id': task_id, 'total_time': processing_time, 'out_of_scope': True}, ensure_ascii=False)}\n\n"
+                return
 
             # FASE 2: Buscar nos livros (em paralelo ao preview sendo exibido)
             sources = await search_books_async(
@@ -590,38 +615,46 @@ async def query(request_body: QueryRequest, request: Request):
             
             # Aguardar ambos
             preview_answer, sources = await asyncio.gather(preview_task, search_task)
-            
+
             print(f"✅ Preview: {len(preview_answer)} chars")
-            print(f"✅ Fontes: {len(sources)} trechos")
-            
-            # Adicionar metadados de prioridade
-            for source in sources:
-                source_path = source.metadata.get('source', '')
-                source.metadata['priority'] = get_book_priority(source_path)
-            
-            # Construir contexto dos livros
-            context = "\n\n---\n\n".join([
-                f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
-                for doc in sources
-            ])
-            
-            # Fase 2: Validar com os livros
-            print("📚 Fase 2: Validando com os livros...")
-            
-            validation_prompt = create_validation_prompt()
-            formatted_validation = validation_prompt.format(
-                conversation_context=conversation_context,
-                question=request_body.question,
-                preview_answer=preview_answer,
-                context=context
-            )
-            
-            validated_answer = quality_llm.invoke(formatted_validation)
-            
-            # Extrair notas de validação
-            final_answer, validation_notes = extract_validation_notes(validated_answer)
-            
-            print(f"✅ Validação completa!")
+
+            # Check if question is out of scope
+            if "Desculpe, sou um assistente especializado" in preview_answer:
+                print(f"⚠️ Pergunta fora do escopo do Espiritismo")
+                final_answer = preview_answer
+                validation_notes = None
+                sources = []  # No sources for off-topic questions
+            else:
+                print(f"✅ Fontes: {len(sources)} trechos")
+
+                # Adicionar metadados de prioridade
+                for source in sources:
+                    source_path = source.metadata.get('source', '')
+                    source.metadata['priority'] = get_book_priority(source_path)
+
+                # Construir contexto dos livros
+                context = "\n\n---\n\n".join([
+                    f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
+                    for doc in sources
+                ])
+
+                # Fase 2: Validar com os livros
+                print("📚 Fase 2: Validando com os livros...")
+
+                validation_prompt = create_validation_prompt()
+                formatted_validation = validation_prompt.format(
+                    conversation_context=conversation_context,
+                    question=request_body.question,
+                    preview_answer=preview_answer,
+                    context=context
+                )
+
+                validated_answer = quality_llm.invoke(formatted_validation)
+
+                # Extrair notas de validação
+                final_answer, validation_notes = extract_validation_notes(validated_answer)
+
+                print(f"✅ Validação completa!")
             
         else:
             # ============================================================
