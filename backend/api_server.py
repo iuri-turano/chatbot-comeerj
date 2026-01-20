@@ -250,14 +250,18 @@ def create_preview_prompt() -> PromptTemplate:
     """Prompt para resposta prévia rápida (sem livros)"""
     template = """Você é um assistente especializado em Espiritismo e Doutrina Espírita.
 
-Responda esta pergunta com base no seu conhecimento geral sobre Espiritismo.
-Esta é uma RESPOSTA PRÉVIA que será validada depois com os livros da Codificação.
-
-Seja conciso (2-3 parágrafos) e correto.
-
 {conversation_context}
 
-PERGUNTA: {question}
+Responda a pergunta atual com base no seu conhecimento geral sobre Espiritismo.
+Esta é uma RESPOSTA PRÉVIA que será validada depois com os livros da Codificação.
+
+INSTRUÇÕES IMPORTANTES:
+1. Responda APENAS a pergunta atual (não repita respostas anteriores)
+2. Use o histórico APENAS se a pergunta atual fizer referência direta a algo anterior (ex: "e sobre isso?", "pode explicar melhor?", "qual a diferença?")
+3. Se a pergunta atual for completamente nova e independente, IGNORE o histórico
+4. Seja conciso (2-3 parágrafos) e correto
+
+PERGUNTA ATUAL: {question}
 
 RESPOSTA PRÉVIA (baseada em conhecimento geral):"""
 
@@ -274,7 +278,7 @@ TAREFA: Validar e melhorar a resposta prévia usando os trechos dos livros.
 
 {conversation_context}
 
-PERGUNTA ORIGINAL: {question}
+PERGUNTA ATUAL: {question}
 
 RESPOSTA PRÉVIA (baseada em conhecimento geral):
 {preview_answer}
@@ -282,17 +286,20 @@ RESPOSTA PRÉVIA (baseada em conhecimento geral):
 TRECHOS DOS LIVROS ESPÍRITAS (priorizados):
 {context}
 
-INSTRUÇÕES:
-1. MANTENHA o que está correto na resposta prévia
-2. CORRIJA o que está errado ou impreciso
-3. ADICIONE citações específicas dos livros
-4. PRIORIZE O Livro dos Espíritos
-5. Seja mais detalhado que a prévia
+INSTRUÇÕES CRÍTICAS:
+1. Responda APENAS a pergunta atual - NUNCA repita respostas de perguntas anteriores
+2. Use o histórico APENAS se a pergunta atual fizer referência direta ao contexto anterior
+3. Se a pergunta for completamente nova e independente, trate-a isoladamente
+4. MANTENHA o que está correto na resposta prévia
+5. CORRIJA o que está errado ou impreciso usando os trechos dos livros
+6. ADICIONE citações específicas dos livros para fundamentar a resposta
+7. PRIORIZE O Livro dos Espíritos nas citações
+8. Seja mais detalhado e fundamentado que a prévia
 
 No final, adicione uma linha indicando:
 [VALIDAÇÃO: o que foi mantido, corrigido ou adicionado]
 
-RESPOSTA FINAL VALIDADA:"""
+RESPOSTA FINAL VALIDADA (responda APENAS a pergunta atual):"""
 
     return PromptTemplate(
         template=template,
@@ -302,14 +309,14 @@ RESPOSTA FINAL VALIDADA:"""
 async def generate_preview(llm, prompt, question: str, conversation_context: str) -> str:
     """Gera resposta prévia em thread separada"""
     loop = asyncio.get_event_loop()
-    
+
     def _generate():
         formatted = prompt.format(
             conversation_context=conversation_context,
             question=question
         )
         return llm.invoke(formatted)
-    
+
     return await loop.run_in_executor(executor, _generate)
 
 async def search_books_async(question: str, top_k: int, fetch_k: int) -> List:
