@@ -260,6 +260,7 @@ INSTRUÇÕES IMPORTANTES:
 2. Use o histórico APENAS se a pergunta atual fizer referência direta a algo anterior (ex: "e sobre isso?", "pode explicar melhor?", "qual a diferença?")
 3. Se a pergunta atual for completamente nova e independente, IGNORE o histórico
 4. Seja conciso (2-3 parágrafos) e correto
+5. Se você NÃO tiver certeza ou conhecimento suficiente, responda: "Preciso consultar os livros da Codificação para responder com precisão."
 
 PERGUNTA ATUAL: {question}
 
@@ -383,6 +384,138 @@ async def status():
 # ============================================================================
 # QUERY ENDPOINT COM PREVIEW AUTOMÁTICO
 # ============================================================================
+
+@app.post("/query/stream")
+async def query_stream(request_body: QueryRequest, request: Request):
+    """
+    Endpoint de streaming que envia preview primeiro, depois resposta final
+
+    Retorna eventos Server-Sent Events (SSE):
+    1. event: preview - Resposta rápida do modelo fast
+    2. event: sources - Fontes encontradas nos livros
+    3. event: answer - Resposta final validada
+    4. event: done - Processamento completo
+    """
+
+    if vectorstore is None or fast_llm is None or quality_llm is None:
+        raise HTTPException(status_code=503, detail="Sistema não carregado")
+
+    # Rate limit
+    client_ip = get_client_ip(request)
+    allowed, remaining = rate_limiter.check_rate_limit(client_ip)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=f"Rate limit: {RATE_LIMIT_PER_MINUTE}/min")
+
+    async def generate_stream():
+        task_id = f"task_{int(time.time() * 1000)}"
+        start_time = time.time()
+
+        try:
+            # Build conversation context
+            conversation_context = ""
+            if request_body.conversation_history:
+                history = build_context_with_history(request_body.conversation_history)
+                if history:
+                    conversation_context = f"\nHISTÓRICO:\n{history}\n"
+
+            # FASE 1: Gerar preview (enviar imediatamente)
+            preview_prompt = create_preview_prompt()
+            formatted_preview = preview_prompt.format(
+                conversation_context=conversation_context,
+                question=request_body.question
+            )
+
+            preview_answer = await asyncio.get_event_loop().run_in_executor(
+                executor,
+                lambda: fast_llm.invoke(formatted_preview)
+            )
+
+            # Enviar preview
+            yield f"event: preview\n"
+            yield f"data: {json.dumps({'answer': preview_answer, 'task_id': task_id}, ensure_ascii=False)}\n\n"
+
+            # FASE 2: Buscar nos livros (em paralelo ao preview sendo exibido)
+            sources = await search_books_async(
+                request_body.question,
+                request_body.top_k,
+                request_body.fetch_k
+            )
+
+            # Adicionar metadados
+            for source in sources:
+                source_path = source.metadata.get('source', '')
+                source.metadata['priority'] = get_book_priority(source_path)
+
+            # Formatar sources
+            formatted_sources = []
+            for source in sources:
+                source_path = source.metadata.get('source', 'Desconhecido')
+                priority = source.metadata.get('priority', 10)
+
+                priority_label = (
+                    "PRIORIDADE MÁXIMA" if priority >= 100 else
+                    "OBRA FUNDAMENTAL" if priority >= 70 else
+                    "COMPLEMENTAR" if priority >= 40 else
+                    "OUTRAS OBRAS"
+                )
+
+                formatted_sources.append({
+                    "content": source.page_content[:500],
+                    "source": os.path.basename(source_path),
+                    "page": source.metadata.get('page', 0),
+                    "priority": priority,
+                    "priority_label": priority_label,
+                    "display_name": get_book_display_name(source_path)
+                })
+
+            # Enviar sources
+            yield f"event: sources\n"
+            yield f"data: {json.dumps({'sources': formatted_sources, 'count': len(formatted_sources)}, ensure_ascii=False)}\n\n"
+
+            # FASE 3: Validar com os livros
+            context = "\n\n---\n\n".join([
+                f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
+                for doc in sources
+            ])
+
+            validation_prompt = create_validation_prompt()
+            formatted_validation = validation_prompt.format(
+                conversation_context=conversation_context,
+                question=request_body.question,
+                preview_answer=preview_answer,
+                context=context
+            )
+
+            validated_answer = await asyncio.get_event_loop().run_in_executor(
+                executor,
+                lambda: quality_llm.invoke(formatted_validation)
+            )
+
+            # Extrair notas de validação
+            final_answer, validation_notes = extract_validation_notes(validated_answer)
+
+            processing_time = time.time() - start_time
+
+            # Enviar resposta final
+            yield f"event: answer\n"
+            yield f"data: {json.dumps({'answer': final_answer, 'validation_notes': validation_notes, 'processing_time': processing_time}, ensure_ascii=False)}\n\n"
+
+            # Enviar done
+            yield f"event: done\n"
+            yield f"data: {json.dumps({'task_id': task_id, 'total_time': processing_time}, ensure_ascii=False)}\n\n"
+
+        except Exception as e:
+            yield f"event: error\n"
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
 
 @app.post("/query", response_model=QueryResponse)
 async def query(request_body: QueryRequest, request: Request):

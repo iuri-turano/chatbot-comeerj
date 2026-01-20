@@ -1,8 +1,9 @@
 import streamlit as st
 import requests
+import json
 from chat_history import (
-    save_conversation, 
-    load_conversation, 
+    save_conversation,
+    load_conversation,
     get_recent_conversations,
     generate_chat_id,
     export_conversation_to_text,
@@ -198,8 +199,8 @@ def save_feedback_via_api(question: str, answer: str, sources: list, rating: str
     except Exception as e:
         raise Exception(f"Erro ao salvar feedback: {str(e)}")
 
-def query_api(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None, enable_preview: bool = True):
-    """Send query to API with conversation history"""
+def query_api_stream(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None, enable_preview: bool = True):
+    """Send query to streaming API - yields preview, sources, and final answer"""
     try:
         # Prepare conversation history (exclude sources for API call)
         api_history = []
@@ -209,7 +210,53 @@ def query_api(question: str, model_name: str, temperature: float, top_k: int, fe
                     "role": msg["role"],
                     "content": msg["content"]
                 })
-        
+
+        response = requests.post(
+            f"{API_URL}/query/stream",
+            json={
+                "question": question,
+                "temperature": temperature,
+                "top_k": top_k,
+                "fetch_k": fetch_k,
+                "enable_preview": enable_preview,
+                "conversation_history": api_history
+            },
+            timeout=600,
+            stream=True  # Enable streaming
+        )
+        response.raise_for_status()
+
+        # Parse Server-Sent Events
+        for line in response.iter_lines():
+            if line:
+                line_str = line.decode('utf-8')
+
+                # Parse SSE format
+                if line_str.startswith('event:'):
+                    event_type = line_str[6:].strip()
+                elif line_str.startswith('data:'):
+                    data = json.loads(line_str[5:].strip())
+                    yield {'event': event_type, 'data': data}
+
+    except requests.exceptions.Timeout:
+        raise Exception("⏱️ Timeout: A resposta demorou muito. Tente novamente ou reduza o número de trechos.")
+    except requests.exceptions.ConnectionError:
+        raise Exception("🔌 Erro de conexão: Verifique se o backend está rodando.")
+    except Exception as e:
+        raise Exception(f"❌ Erro: {str(e)}")
+
+def query_api(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None, enable_preview: bool = True):
+    """Send query to API with conversation history (non-streaming fallback)"""
+    try:
+        # Prepare conversation history (exclude sources for API call)
+        api_history = []
+        if conversation_history:
+            for msg in conversation_history:
+                api_history.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
+
         response = requests.post(
             f"{API_URL}/query",
             json={
@@ -554,75 +601,140 @@ def main():
         
         # Get assistant response
         with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("🔍 Consultando os livros espíritas..."):
-                try:
-                    result = query_api(
-                        prompt, 
-                        None,  # Model escolhido automaticamente
-                        temperature, 
-                        top_k, 
+            try:
+                if enable_preview:
+                    # STREAMING MODE - Show preview first, then final answer
+                    preview_placeholder = st.empty()
+                    sources_placeholder = st.empty()
+                    answer_placeholder = st.empty()
+                    validation_placeholder = st.empty()
+
+                    preview_answer = None
+                    sources = []
+                    final_answer = None
+                    validation_notes = None
+
+                    # Stream events
+                    for event in query_api_stream(
+                        prompt,
+                        None,
+                        temperature,
+                        top_k,
                         fetch_k,
                         st.session_state.messages[:-1],
                         enable_preview
-                    )
-                    
-                    answer = result['answer']
-                    sources = result['sources']
-                    has_preview = result.get('has_preview', False)
-                    preview_answer = result.get('preview_answer')
-                    validation_notes = result.get('validation_notes')
-                    
-                    # Display immediately
+                    ):
+                        event_type = event['event']
+                        data = event['data']
+
+                        if event_type == 'preview':
+                            # Show preview immediately
+                            preview_answer = data['answer']
+                            with preview_placeholder.container():
+                                st.markdown('<div class="preview-box">', unsafe_allow_html=True)
+                                st.markdown("**💭 Resposta inicial:**")
+                                st.markdown(preview_answer)
+                                st.caption("_Aguarde... consultando os livros para validação._")
+                                st.markdown('</div>', unsafe_allow_html=True)
+
+                        elif event_type == 'sources':
+                            # Update with sources found
+                            sources = data['sources']
+                            with sources_placeholder.container():
+                                st.info(f"📚 {data['count']} fontes encontradas nos livros")
+
+                        elif event_type == 'answer':
+                            # Show final answer
+                            final_answer = data['answer']
+                            validation_notes = data.get('validation_notes')
+
+                            # Clear placeholders and show final result
+                            preview_placeholder.empty()
+                            sources_placeholder.empty()
+
+                            with answer_placeholder.container():
+                                st.markdown('<div class="preview-box">', unsafe_allow_html=True)
+                                st.markdown("**💭 Resposta inicial:**")
+                                st.markdown(preview_answer)
+                                st.caption("_Esta foi a resposta imediata. Veja abaixo a validação com os livros._")
+                                st.markdown('</div>', unsafe_allow_html=True)
+
+                                st.markdown("**✅ Resposta fundamentada:**")
+                                st.markdown(final_answer)
+
+                                if validation_notes:
+                                    st.markdown(f"""
+                                    <div class="validation-notes">
+                                        <strong>🔍 Processo de validação:</strong><br>
+                                        {validation_notes}
+                                    </div>
+                                    """, unsafe_allow_html=True)
+
+                            # Show sources
+                            if sources:
+                                with st.expander(f"📖 {len(sources)} Fontes Consultadas"):
+                                    for i, source in enumerate(sources, 1):
+                                        display_source(source, i)
+
+                        elif event_type == 'done':
+                            # Processing complete
+                            pass
+
+                    # Save message
                     message_data = {
                         "role": "assistant",
-                        "content": answer,
+                        "content": final_answer,
                         "sources": sources,
-                        "has_preview": has_preview,
+                        "has_preview": True,
                         "preview_answer": preview_answer,
                         "validation_notes": validation_notes
                     }
-                    
-                    # Show preview if available
-                    if has_preview and preview_answer:
-                        st.markdown('<div class="preview-box">', unsafe_allow_html=True)
-                        st.markdown("**💭 Resposta inicial:**")
-                        st.markdown(preview_answer)
-                        st.caption("_Esta foi a resposta imediata. Veja abaixo a validação com os livros._")
-                        st.markdown('</div>', unsafe_allow_html=True)
-                        
-                        st.markdown("**✅ Resposta fundamentada:**")
-                        st.markdown(answer)
-                        
-                        if validation_notes:
-                            st.markdown(f"""
-                            <div class="validation-notes">
-                                <strong>🔍 Processo de validação:</strong><br>
-                                {validation_notes}
-                            </div>
-                            """, unsafe_allow_html=True)
-                    else:
-                        st.markdown(answer)
-                    
-                    # Show sources
-                    if sources:
-                        with st.expander(f"📖 {len(sources)} Fontes Consultadas"):
-                            for i, source in enumerate(sources, 1):
-                                display_source(source, i)
-                    
-                    # Add to messages
                     st.session_state.messages.append(message_data)
-                    
-                    # Auto-save
-                    save_conversation(
-                        st.session_state.current_chat_id,
-                        st.session_state.messages,
-                        st.session_state.user_name
-                    )
-                    
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(str(e))
+
+                else:
+                    # NON-STREAMING MODE (fallback)
+                    with st.spinner("🔍 Consultando os livros espíritas..."):
+                        result = query_api(
+                            prompt,
+                            None,
+                            temperature,
+                            top_k,
+                            fetch_k,
+                            st.session_state.messages[:-1],
+                            enable_preview
+                        )
+
+                        answer = result['answer']
+                        sources = result['sources']
+
+                        st.markdown(answer)
+
+                        # Show sources
+                        if sources:
+                            with st.expander(f"📖 {len(sources)} Fontes Consultadas"):
+                                for i, source in enumerate(sources, 1):
+                                    display_source(source, i)
+
+                        # Save message
+                        message_data = {
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": sources,
+                            "has_preview": False
+                        }
+                        st.session_state.messages.append(message_data)
+
+                # Auto-save
+                save_conversation(
+                    st.session_state.current_chat_id,
+                    st.session_state.messages,
+                    st.session_state.user_name
+                )
+
+                st.rerun()
+
+            except Exception as e:
+                st.error(str(e))
 
 if __name__ == "__main__":
     main()
