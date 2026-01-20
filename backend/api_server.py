@@ -590,6 +590,74 @@ RESPOSTA:"""
         print(f"❌ Erro: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/feedback")
+async def save_feedback_endpoint(request: Request):
+    """Save user feedback"""
+    try:
+        data = await request.json()
+        
+        # Create feedback directory if needed
+        feedback_dir = "feedback"
+        if not os.path.exists(feedback_dir):
+            os.makedirs(feedback_dir)
+        
+        feedback_file = os.path.join(feedback_dir, "responses_feedback.jsonl")
+        
+        # Prepare feedback entry
+        feedback_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "user": data.get("user_name", "Anonymous"),
+            "question": data.get("question", ""),
+            "answer": data.get("answer", ""),
+            "keywords": data.get("keywords", []),
+            "sources": data.get("sources", []),
+            "rating": data.get("rating", "neutral"),
+            "comment": data.get("comment", "")
+        }
+        
+        # Append to JSONL file
+        with open(feedback_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(feedback_entry, ensure_ascii=False) + '\n')
+        
+        return {"status": "success", "message": "Feedback saved"}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/feedback/stats")
+async def get_feedback_stats():
+    """Get feedback statistics"""
+    try:
+        feedback_file = os.path.join("feedback", "responses_feedback.jsonl")
+        
+        if not os.path.exists(feedback_file):
+            return {
+                "total": 0,
+                "good": 0,
+                "neutral": 0,
+                "bad": 0,
+                "feedbacks": []
+            }
+        
+        feedbacks = []
+        with open(feedback_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    feedbacks.append(json.loads(line))
+        
+        stats = {
+            "total": len(feedbacks),
+            "good": sum(1 for f in feedbacks if f.get("rating") == "good"),
+            "neutral": sum(1 for f in feedbacks if f.get("rating") == "neutral"),
+            "bad": sum(1 for f in feedbacks if f.get("rating") == "bad"),
+            "feedbacks": feedbacks[-100:]  # Last 100 feedbacks
+        }
+        
+        return stats
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     print("\n🚀 Iniciando API v1.5.0 (Preview Automático)...")

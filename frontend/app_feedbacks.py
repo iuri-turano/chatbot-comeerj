@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+import requests
 from datetime import datetime
 from collections import defaultdict
 import pandas as pd
@@ -85,10 +86,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # API Configuration
-try:
-    API_URL = st.secrets["API_URL"]
-except:
-    API_URL = os.getenv("API_URL", "http://localhost:8000")
+API_URL = st.secrets["API_URL"]
 
 def load_all_feedbacks():
     """Load all feedbacks from API"""
@@ -198,11 +196,11 @@ def main():
     try:
         health_response = requests.get(f"{API_URL}/health", timeout=5)
         if health_response.status_code == 200:
-            st.success(f"✅ Conectado: {API_URL}")
+            st.success(f"✅ Conectado")
         else:
             st.error("❌ Backend respondeu com erro")
     except:
-        st.error(f"❌ Não foi possível conectar ao backend: {API_URL}")
+        st.error(f"❌ Não foi possível conectar ao backend")
         st.info("Verifique se o backend está rodando e se a URL do ngrok está correta em secrets.toml")
         return
     
