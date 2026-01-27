@@ -337,32 +337,17 @@ def display_source(source: dict, index: int):
     """, unsafe_allow_html=True)
 
 def display_message_with_preview(message: dict, idx: int):
-    """Display message with preview if available"""
-    
-    # If has preview, show both
-    if message.get("has_preview") and message.get("preview_answer"):
-        # Preview answer
-        st.markdown('<div class="preview-box">', unsafe_allow_html=True)
-        st.markdown("**💭 Resposta inicial:**")
-        st.markdown(message["preview_answer"])
-        st.caption("_Esta foi a resposta imediata. Veja abaixo a validação com os livros._")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Validated answer
-        st.markdown("**✅ Resposta fundamentada:**")
-        st.markdown(message["content"])
-        
-        # Validation notes
-        if message.get("validation_notes"):
-            st.markdown(f"""
-            <div class="validation-notes">
-                <strong>🔍 Processo de validação:</strong><br>
-                {message["validation_notes"]}
-            </div>
-            """, unsafe_allow_html=True)
-    else:
-        # Regular message
-        st.markdown(message["content"])
+    """Display message with search plan if available"""
+
+    # If has search plan, show it
+    if message.get("search_plan"):
+        st.markdown("**🔍 Plano de busca:**")
+        st.markdown(message["search_plan"])
+        st.markdown("---")
+
+    # Show answer
+    st.markdown("**💬 Resposta:**")
+    st.markdown(message["content"])
     
     # Show sources
     if "sources" in message and message["sources"]:
@@ -632,16 +617,14 @@ def main():
         with st.chat_message("assistant", avatar="🤖"):
             try:
                 if enable_preview:
-                    # STREAMING MODE - Show preview first, then final answer
-                    preview_placeholder = st.empty()
+                    # STREAMING MODE - Show search plan first, then final answer
+                    search_plan_placeholder = st.empty()
                     sources_placeholder = st.empty()
                     answer_placeholder = st.empty()
-                    validation_placeholder = st.empty()
 
-                    preview_answer = None
+                    search_plan = None
                     sources = []
                     final_answer = None
-                    validation_notes = None
 
                     # Stream events
                     for event in query_api_stream(
@@ -656,19 +639,17 @@ def main():
                         event_type = event['event']
                         data = event['data']
 
-                        if event_type == 'preview':
-                            # Show preview with typing animation
-                            preview_answer = data['answer']
-                            with preview_placeholder.container():
-                                st.markdown('<div class="preview-box">', unsafe_allow_html=True)
-                                st.markdown("**💭 Resposta inicial:**")
+                        if event_type == 'search_plan':
+                            # Show search plan with typing animation
+                            search_plan = data['plan']
+                            with search_plan_placeholder.container():
+                                st.markdown("**🔍 Plano de busca:**")
 
                                 # Create placeholder for typing animation
                                 typing_placeholder = st.empty()
-                                display_text_with_typing(preview_answer, typing_placeholder, delay=0.005)
+                                display_text_with_typing(search_plan, typing_placeholder, delay=0.003)
 
-                                st.caption("_Aguarde... consultando os livros para validação._")
-                                st.markdown('</div>', unsafe_allow_html=True)
+                                st.caption("_Buscando nos livros..._")
 
                         elif event_type == 'sources':
                             # Update with sources found
@@ -679,35 +660,26 @@ def main():
                         elif event_type == 'answer':
                             # Show final answer
                             final_answer = data['answer']
-                            validation_notes = data.get('validation_notes')
+                            out_of_scope = data.get('out_of_scope', False)
 
-                            # Clear placeholders and show final result
-                            preview_placeholder.empty()
+                            # Clear placeholders
+                            search_plan_placeholder.empty()
                             sources_placeholder.empty()
 
                             with answer_placeholder.container():
-                                st.markdown('<div class="preview-box">', unsafe_allow_html=True)
-                                st.markdown("**💭 Resposta inicial:**")
-                                st.markdown(preview_answer)
-                                st.caption("_Esta foi a resposta imediata. Veja abaixo a validação com os livros._")
-                                st.markdown('</div>', unsafe_allow_html=True)
-
-                                st.markdown("**✅ Resposta fundamentada:**")
+                                # Show search plan (if not off-topic)
+                                if not out_of_scope and search_plan:
+                                    st.markdown("**🔍 Plano de busca:**")
+                                    st.markdown(search_plan)
+                                    st.markdown("---")
 
                                 # Typing animation for final answer
+                                st.markdown("**💬 Resposta:**")
                                 final_typing_placeholder = st.empty()
                                 display_text_with_typing(final_answer, final_typing_placeholder, delay=0.003)
 
-                                if validation_notes:
-                                    st.markdown(f"""
-                                    <div class="validation-notes">
-                                        <strong>🔍 Processo de validação:</strong><br>
-                                        {validation_notes}
-                                    </div>
-                                    """, unsafe_allow_html=True)
-
-                            # Show sources
-                            if sources:
+                            # Show sources (if not off-topic)
+                            if sources and not out_of_scope:
                                 with st.expander(f"📖 {len(sources)} Fontes Consultadas"):
                                     for i, source in enumerate(sources, 1):
                                         display_source(source, i)
@@ -721,9 +693,7 @@ def main():
                         "role": "assistant",
                         "content": final_answer,
                         "sources": sources,
-                        "has_preview": True,
-                        "preview_answer": preview_answer,
-                        "validation_notes": validation_notes
+                        "search_plan": search_plan
                     }
                     st.session_state.messages.append(message_data)
 

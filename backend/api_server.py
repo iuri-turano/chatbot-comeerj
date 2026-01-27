@@ -34,9 +34,8 @@ MAX_CONCURRENT_REQUESTS = 4
 CACHE_SIZE = 500
 RATE_LIMIT_PER_MINUTE = 15
 
-# Modelos
-FAST_MODEL = "llama3.2:3b"      # Para preview rápido
-QUALITY_MODEL = "qwen2.5:7b"    # Para resposta final
+# Modelo único
+MODEL = "llama3.1:8b"  # Modelo principal para todas as operações
 
 app = FastAPI(
     title="Assistente Espírita API",
@@ -125,9 +124,8 @@ executor = ThreadPoolExecutor(max_workers=4)
 response_cache = ResponseCache(max_size=CACHE_SIZE)
 rate_limiter = RateLimiter(max_per_minute=RATE_LIMIT_PER_MINUTE)
 
-# LLMs
-fast_llm = None
-quality_llm = None
+# LLM
+llm = None  # Modelo único para todas as operações
 
 # ============================================================================
 # MODELS
@@ -160,10 +158,8 @@ class QueryResponse(BaseModel):
     sources: list[Source]
     processing_time: float
     from_cache: bool = False
-    # Preview fields
-    has_preview: bool = False
-    preview_answer: Optional[str] = None
-    validation_notes: Optional[str] = None
+    search_plan: Optional[str] = None  # Plano de busca
+    out_of_scope: bool = False  # Flag para perguntas fora do escopo
 
 # ============================================================================
 # STARTUP
@@ -171,13 +167,13 @@ class QueryResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    global vectorstore, fast_llm, quality_llm, startup_time
-    
+    global vectorstore, llm, startup_time
+
     startup_time = time.time()
-    
+
     print("=" * 70)
-    print("🚀 Assistente Espírita API v1.5.0")
-    print("   Sistema com Preview Automático")
+    print("🚀 Assistente Espírita API v2.0.0")
+    print("   Sistema Simplificado com Plano de Busca")
     print("=" * 70)
     
     if not os.path.exists(DB_DIR):
@@ -202,23 +198,19 @@ async def startup_event():
         embedding_function=embeddings
     )
     
-    # Load LLMs
-    print("\n🤖 Carregando modelos...")
-    print(f"  1/2 {FAST_MODEL} (preview rápido)...")
-    fast_llm = Ollama(model=FAST_MODEL, temperature=0.3, num_ctx=4096)
-    print(f"      ✅ Carregado")
-    
-    print(f"  2/2 {QUALITY_MODEL} (resposta final)...")
-    quality_llm = Ollama(model=QUALITY_MODEL, temperature=0.3, num_ctx=CONTEXT_WINDOW)
-    print(f"      ✅ Carregado")
-    
+    # Load LLM
+    print("\n🤖 Carregando modelo...")
+    print(f"   {MODEL}...")
+    llm = Ollama(model=MODEL, temperature=0.3, num_ctx=CONTEXT_WINDOW)
+    print(f"   ✅ Modelo carregado")
+
     print("\n✅ Sistema pronto!")
     print("=" * 70)
-    print("💡 MODO PREVIEW:")
-    print("   1. LLM gera resposta rápida (conhecimento geral)")
-    print("   2. Sistema busca nos livros")
-    print("   3. LLM valida e corrige a resposta")
-    print("   4. Retorna: preview + resposta final + correções")
+    print("💡 NOVO FLUXO:")
+    print("   1. Detecção de tópico off-topic (semântica)")
+    print("   2. Gera plano de busca nos livros")
+    print("   3. Busca trechos relevantes")
+    print("   4. Responde com base nos trechos encontrados")
     print("=" * 70)
     print("🌐 API: http://localhost:8000")
     print("📖 Docs: http://localhost:8000/docs")
@@ -246,83 +238,112 @@ def build_context_with_history(conversation_history: List[Message], max_history:
             parts.append(f"Assistente: {msg.content}")
     return "\n".join(parts)
 
-def create_preview_prompt() -> PromptTemplate:
-    """Prompt para resposta prévia rápida (sem livros)"""
+def detect_off_topic(question: str) -> Tuple[bool, str]:
+    """
+    Improved off-topic detection with ambiguous word handling
+
+    Returns: (is_off_topic, reason)
+    """
+    question_lower = question.lower()
+
+    # Ambiguous words that could be Spiritist or not
+    ambiguous_terms = {
+        "codificação": {
+            "spiritist": ["kardec", "espírita", "livro", "doutrina", "espíritos"],
+            "other": ["python", "utf", "caractere", "encoding", "programa", "código"]
+        },
+        "espírito": {
+            "spiritist": ["alma", "reencarnação", "médium", "perispírito", "espírita"],
+            "other": ["bebida", "álcool", "destilado", "cachaça"]
+        },
+        "médium": {
+            "spiritist": ["psicografia", "incorporação", "comunicação", "espíritos", "faculdade"],
+            "other": ["roupa", "tamanho", "vestuário", "p", "g", "gg"]
+        }
+    }
+
+    # Check for ambiguous terms
+    for term, contexts in ambiguous_terms.items():
+        if term in question_lower:
+            # Check for Spiritist context
+            has_spiritist = any(kw in question_lower for kw in contexts["spiritist"])
+            has_other = any(kw in question_lower for kw in contexts["other"])
+
+            if has_other and not has_spiritist:
+                return (True, f"Termo '{term}' usado em contexto não-espírita")
+            # If spiritist context or unclear, continue (let LLM decide)
+
+    # Check for obvious off-topic keywords
+    off_topic_keywords = [
+        "python", "javascript", "código", "programar", "script", "html", "css",
+        "receita", "cozinha", "comida", "bolo", "prato",
+        "futebol", "jogo", "esporte", "time", "partida",
+        "filme", "série", "netflix", "cinema",
+        "matemática", "física", "química", "cálculo"
+    ]
+
+    for keyword in off_topic_keywords:
+        if keyword in question_lower:
+            # Double-check it's not in a Spiritist context
+            spiritist_keywords = ["kardec", "espírita", "espiritismo", "evangelho", "médium", "espírito", "doutrina"]
+            if not any(sk in question_lower for sk in spiritist_keywords):
+                return (True, f"Palavra-chave não relacionada: '{keyword}'")
+
+    return (False, "")
+
+def create_search_plan_prompt() -> PromptTemplate:
+    """Prompt para gerar plano de busca nos livros"""
     template = """Você é um assistente especializado em Espiritismo e Doutrina Espírita.
 
 {conversation_context}
 
-IMPORTANTE: Você DEVE responder APENAS perguntas relacionadas a:
-- Espiritismo e Doutrina Espírita
-- Allan Kardec e a Codificação Espírita
-- Temas espirituais, religião, filosofia relacionados ao Espiritismo
-- Mediunidade, perispírito, reencarnação, evolução espiritual
-- Moral, ética e ensinamentos dos Espíritos
+TAREFA: Analise a pergunta e crie um PLANO DE BUSCA conciso para consultar os livros da Codificação.
 
-Se a pergunta NÃO for relacionada a estes temas, responda EXATAMENTE:
-"Desculpe, sou um assistente especializado em Espiritismo e Doutrina Espírita. Não posso responder perguntas sobre outros assuntos. Por favor, faça uma pergunta relacionada ao Espiritismo."
+INSTRUÇÕES:
+1. Identifique os conceitos-chave da pergunta
+2. Liste 2-4 tópicos específicos para buscar nos livros
+3. Seja objetivo e direto (máximo 4 linhas)
+4. Use bullet points (-)
+5. Não responda a pergunta, apenas planeje a busca
 
-Se a pergunta for sobre Espiritismo, siga estas instruções:
-1. Responda APENAS a pergunta atual (não repita respostas anteriores)
-2. Use o histórico APENAS se a pergunta atual fizer referência direta a algo anterior (ex: "e sobre isso?", "pode explicar melhor?", "qual a diferença?")
-3. Se a pergunta atual for completamente nova e independente, IGNORE o histórico
-4. Seja conciso (2-3 parágrafos) e correto
-5. Se você NÃO tiver certeza ou conhecimento suficiente, responda: "Preciso consultar os livros da Codificação para responder com precisão."
+PERGUNTA: {question}
 
-PERGUNTA ATUAL: {question}
-
-RESPOSTA PRÉVIA (baseada em conhecimento geral):"""
+PLANO DE BUSCA:"""
 
     return PromptTemplate(
         template=template,
         input_variables=["conversation_context", "question"]
     )
 
-def create_validation_prompt() -> PromptTemplate:
-    """Prompt para validar preview com os livros"""
+def create_answer_prompt() -> PromptTemplate:
+    """Prompt principal para responder com base nos livros"""
     template = """Você é um assistente especializado em Espiritismo e Doutrina Espírita.
-
-TAREFA: Validar e melhorar a resposta prévia usando os trechos dos livros.
 
 {conversation_context}
 
-PERGUNTA ATUAL: {question}
-
-RESPOSTA PRÉVIA (baseada em conhecimento geral):
-{preview_answer}
+PERGUNTA: {question}
 
 TRECHOS DOS LIVROS ESPÍRITAS (priorizados):
 {context}
 
-RESTRIÇÃO DE ESCOPO:
-Se a resposta prévia indica que a pergunta está FORA DO ESCOPO do Espiritismo (contém a mensagem "Desculpe, sou um assistente especializado..."), você DEVE:
-1. Manter EXATAMENTE a mesma mensagem de rejeição
-2. NÃO tentar responder a pergunta
-3. NÃO adicionar notas de validação
-4. Retornar apenas a mensagem de rejeição
+INSTRUÇÕES:
+1. Responda APENAS a pergunta atual (não repita respostas anteriores)
+2. Use o histórico apenas se a pergunta fizer referência direta ("isso", "aquilo", "pode explicar melhor")
+3. Fundamente sua resposta nos trechos fornecidos acima
+4. PRIORIZE citações do Livro dos Espíritos
+5. Seja claro, detalhado e preciso
+6. Cite as fontes quando relevante (ex: "Segundo O Livro dos Espíritos...")
+7. Se os trechos não forem suficientes, diga que precisa consultar mais
 
-Se a pergunta for sobre Espiritismo, siga estas INSTRUÇÕES CRÍTICAS:
-1. Responda APENAS a pergunta atual - NUNCA repita respostas de perguntas anteriores
-2. Use o histórico APENAS se a pergunta atual fizer referência direta ao contexto anterior
-3. Se a pergunta for completamente nova e independente, trate-a isoladamente
-4. MANTENHA o que está correto na resposta prévia
-5. CORRIJA o que está errado ou impreciso usando os trechos dos livros
-6. ADICIONE citações específicas dos livros para fundamentar a resposta
-7. PRIORIZE O Livro dos Espíritos nas citações
-8. Seja mais detalhado e fundamentado que a prévia
-
-No final, adicione uma linha indicando:
-[VALIDAÇÃO: o que foi mantido, corrigido ou adicionado]
-
-RESPOSTA FINAL VALIDADA (responda APENAS a pergunta atual):"""
+RESPOSTA:"""
 
     return PromptTemplate(
         template=template,
-        input_variables=["conversation_context", "question", "preview_answer", "context"]
+        input_variables=["conversation_context", "question", "context"]
     )
 
-async def generate_preview(llm, prompt, question: str, conversation_context: str) -> str:
-    """Gera resposta prévia em thread separada"""
+async def generate_search_plan(llm_instance, prompt, question: str, conversation_context: str) -> str:
+    """Gera plano de busca em thread separada"""
     loop = asyncio.get_event_loop()
 
     def _generate():
@@ -330,7 +351,7 @@ async def generate_preview(llm, prompt, question: str, conversation_context: str
             conversation_context=conversation_context,
             question=question
         )
-        return llm.invoke(formatted)
+        return llm_instance.invoke(formatted)
 
     return await loop.run_in_executor(executor, _generate)
 
@@ -343,14 +364,6 @@ async def search_books_async(question: str, top_k: int, fetch_k: int) -> List:
     
     return await loop.run_in_executor(executor, _search)
 
-def extract_validation_notes(validated_answer: str) -> Tuple[str, str]:
-    """Extrai notas de validação da resposta"""
-    if "[VALIDAÇÃO:" in validated_answer:
-        parts = validated_answer.split("[VALIDAÇÃO:")
-        answer = parts[0].strip()
-        notes = parts[1].strip().rstrip("]")
-        return answer, notes
-    return validated_answer, ""
 
 # ============================================================================
 # STATUS ENDPOINTS
@@ -374,23 +387,20 @@ async def health():
 @app.get("/status")
 async def status():
     cache_stats = response_cache.get_stats()
-    
+
     # Check CUDA availability
     cuda_available = torch.cuda.is_available()
     gpu_name = "CPU"
     if cuda_available:
         gpu_name = torch.cuda.get_device_name(0)
-    
+
     return {
         "online": True,
         "uptime_seconds": time.time() - startup_time,
         "cuda_available": cuda_available,
         "gpu": gpu_name,
-        "models_loaded": {
-            "fast": FAST_MODEL,
-            "quality": QUALITY_MODEL,
-            "both_ready": fast_llm is not None and quality_llm is not None
-        },
+        "model": MODEL,
+        "model_loaded": llm is not None,
         "cache": cache_stats,
         "timestamp": datetime.now().isoformat()
     }
@@ -402,16 +412,16 @@ async def status():
 @app.post("/query/stream")
 async def query_stream(request_body: QueryRequest, request: Request):
     """
-    Endpoint de streaming que envia preview primeiro, depois resposta final
+    Endpoint de streaming com plano de busca
 
     Retorna eventos Server-Sent Events (SSE):
-    1. event: preview - Resposta rápida do modelo fast
+    1. event: search_plan - Plano de busca nos livros
     2. event: sources - Fontes encontradas nos livros
-    3. event: answer - Resposta final validada
+    3. event: answer - Resposta final baseada nas fontes
     4. event: done - Processamento completo
     """
 
-    if vectorstore is None or fast_llm is None or quality_llm is None:
+    if vectorstore is None or llm is None:
         raise HTTPException(status_code=503, detail="Sistema não carregado")
 
     # Rate limit
@@ -432,46 +442,43 @@ async def query_stream(request_body: QueryRequest, request: Request):
                 if history:
                     conversation_context = f"\nHISTÓRICO:\n{history}\n"
 
-            # FASE 1: Gerar preview (enviar imediatamente)
-            preview_prompt = create_preview_prompt()
-            formatted_preview = preview_prompt.format(
-                conversation_context=conversation_context,
-                question=request_body.question
-            )
-
-            preview_answer = await asyncio.get_event_loop().run_in_executor(
-                executor,
-                lambda: fast_llm.invoke(formatted_preview)
-            )
-
-            # Enviar preview
-            yield f"event: preview\n"
-            yield f"data: {json.dumps({'answer': preview_answer, 'task_id': task_id}, ensure_ascii=False)}\n\n"
-
-            # Check if question is out of scope
-            if "Desculpe, sou um assistente especializado" in preview_answer:
-                # Question is off-topic, skip book search and validation
+            # PHASE 1: Off-topic detection (improved)
+            is_off_topic, reason = detect_off_topic(request_body.question)
+            if is_off_topic:
+                rejection_msg = f"Desculpe, sou um assistente especializado em Espiritismo e Doutrina Espírita. Não posso responder perguntas sobre outros assuntos. ({reason})"
                 processing_time = time.time() - start_time
                 yield f"event: answer\n"
-                yield f"data: {json.dumps({'answer': preview_answer, 'validation_notes': None, 'processing_time': processing_time, 'out_of_scope': True}, ensure_ascii=False)}\n\n"
-
+                yield f"data: {json.dumps({'answer': rejection_msg, 'out_of_scope': True, 'processing_time': processing_time}, ensure_ascii=False)}\n\n"
                 yield f"event: done\n"
                 yield f"data: {json.dumps({'task_id': task_id, 'total_time': processing_time, 'out_of_scope': True}, ensure_ascii=False)}\n\n"
                 return
 
-            # FASE 2: Buscar nos livros (em paralelo ao preview sendo exibido)
+            # PHASE 2: Generate search plan
+            search_plan_prompt = create_search_plan_prompt()
+            search_plan = await generate_search_plan(
+                llm,
+                search_plan_prompt,
+                request_body.question,
+                conversation_context
+            )
+
+            # Send search plan to client
+            yield f"event: search_plan\n"
+            yield f"data: {json.dumps({'plan': search_plan, 'task_id': task_id}, ensure_ascii=False)}\n\n"
+
+            # PHASE 3: Search books
             sources = await search_books_async(
                 request_body.question,
                 request_body.top_k,
                 request_body.fetch_k
             )
 
-            # Adicionar metadados
+            # Add metadata
             for source in sources:
                 source_path = source.metadata.get('source', '')
                 source.metadata['priority'] = get_book_priority(source_path)
 
-            # Formatar sources
+            # Format sources
             formatted_sources = []
             for source in sources:
                 source_path = source.metadata.get('source', 'Desconhecido')
@@ -493,39 +500,35 @@ async def query_stream(request_body: QueryRequest, request: Request):
                     "display_name": get_book_display_name(source_path)
                 })
 
-            # Enviar sources
+            # Send sources
             yield f"event: sources\n"
             yield f"data: {json.dumps({'sources': formatted_sources, 'count': len(formatted_sources)}, ensure_ascii=False)}\n\n"
 
-            # FASE 3: Validar com os livros
+            # PHASE 4: Generate final answer
             context = "\n\n---\n\n".join([
                 f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
                 for doc in sources
             ])
 
-            validation_prompt = create_validation_prompt()
-            formatted_validation = validation_prompt.format(
+            answer_prompt = create_answer_prompt()
+            formatted_answer = answer_prompt.format(
                 conversation_context=conversation_context,
                 question=request_body.question,
-                preview_answer=preview_answer,
                 context=context
             )
 
-            validated_answer = await asyncio.get_event_loop().run_in_executor(
+            final_answer = await asyncio.get_event_loop().run_in_executor(
                 executor,
-                lambda: quality_llm.invoke(formatted_validation)
+                lambda: llm.invoke(formatted_answer)
             )
-
-            # Extrair notas de validação
-            final_answer, validation_notes = extract_validation_notes(validated_answer)
 
             processing_time = time.time() - start_time
 
-            # Enviar resposta final
+            # Send final answer
             yield f"event: answer\n"
-            yield f"data: {json.dumps({'answer': final_answer, 'validation_notes': validation_notes, 'processing_time': processing_time}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'answer': final_answer, 'processing_time': processing_time}, ensure_ascii=False)}\n\n"
 
-            # Enviar done
+            # Send done
             yield f"event: done\n"
             yield f"data: {json.dumps({'task_id': task_id, 'total_time': processing_time}, ensure_ascii=False)}\n\n"
 
@@ -545,185 +548,123 @@ async def query_stream(request_body: QueryRequest, request: Request):
 @app.post("/query", response_model=QueryResponse)
 async def query(request_body: QueryRequest, request: Request):
     """
-    Endpoint principal com preview automático integrado
-    
+    Endpoint principal simplificado
+
     Fluxo:
-    1. Gera resposta prévia rápida (LLM sem livros)
-    2. Busca nos livros (paralelo)
-    3. Valida preview com os livros (LLM com contexto)
-    4. Retorna ambas + notas de validação
+    1. Detecção de off-topic
+    2. Gera plano de busca
+    3. Busca nos livros
+    4. Responde com base nos trechos
     """
-    
-    if vectorstore is None or fast_llm is None or quality_llm is None:
+
+    if vectorstore is None or llm is None:
         raise HTTPException(status_code=503, detail="Sistema não carregado")
-    
+
     # 1. RATE LIMIT
     client_ip = get_client_ip(request)
     allowed, remaining = rate_limiter.check_rate_limit(client_ip)
     if not allowed:
         raise HTTPException(status_code=429, detail=f"Rate limit: {RATE_LIMIT_PER_MINUTE}/min")
-    
+
     # 2. CHECK CACHE
     if request_body.use_cache:
         cached = response_cache.get(
             request_body.question,
-            QUALITY_MODEL,
+            MODEL,
             request_body.temperature
         )
         if cached:
             print(f"✅ CACHE HIT")
             return QueryResponse(**cached)
-    
-    # 3. PROCESSAR COM PREVIEW
+
+    # 3. PROCESS REQUEST
     task_id = f"task_{int(time.time() * 1000)}"
     start_time = time.time()
-    
+
     try:
         print(f"\n{'='*70}")
         print(f"❓ Pergunta: {request_body.question[:80]}...")
-        
+
         # Build conversation context
         conversation_context = ""
         if request_body.conversation_history:
             history = build_context_with_history(request_body.conversation_history)
             if history:
                 conversation_context = f"\nHISTÓRICO:\n{history}\n"
-        
-        if request_body.enable_preview:
-            # ============================================================
-            # MODO PREVIEW: Resposta rápida + validação
-            # ============================================================
-            
-            print("⚡ Fase 1: Gerando preview + buscando livros (paralelo)...")
-            
-            # Preparar prompts
-            preview_prompt = create_preview_prompt()
-            
-            # Executar em paralelo: preview + busca
-            preview_task = generate_preview(
-                fast_llm,
-                preview_prompt,
-                request_body.question,
-                conversation_context
-            )
-            
-            search_task = search_books_async(
-                request_body.question,
-                request_body.top_k,
-                request_body.fetch_k
-            )
-            
-            # Aguardar ambos
-            preview_answer, sources = await asyncio.gather(preview_task, search_task)
 
-            print(f"✅ Preview: {len(preview_answer)} chars")
+        # PHASE 1: Off-topic detection
+        is_off_topic, reason = detect_off_topic(request_body.question)
+        if is_off_topic:
+            print(f"⚠️ Pergunta fora do escopo: {reason}")
+            rejection_msg = f"Desculpe, sou um assistente especializado em Espiritismo e Doutrina Espírita. Não posso responder perguntas sobre outros assuntos. ({reason})"
+            processing_time = time.time() - start_time
 
-            # Check if question is out of scope
-            if "Desculpe, sou um assistente especializado" in preview_answer:
-                print(f"⚠️ Pergunta fora do escopo do Espiritismo")
-                final_answer = preview_answer
-                validation_notes = None
-                sources = []  # No sources for off-topic questions
-            else:
-                print(f"✅ Fontes: {len(sources)} trechos")
+            response_data = {
+                "task_id": task_id,
+                "answer": rejection_msg,
+                "sources": [],
+                "processing_time": processing_time,
+                "from_cache": False,
+                "search_plan": None,
+                "out_of_scope": True
+            }
+            return QueryResponse(**response_data)
 
-                # Adicionar metadados de prioridade
-                for source in sources:
-                    source_path = source.metadata.get('source', '')
-                    source.metadata['priority'] = get_book_priority(source_path)
+        # PHASE 2: Generate search plan
+        print("🔍 Fase 1: Gerando plano de busca...")
+        search_plan_prompt = create_search_plan_prompt()
+        search_plan = await generate_search_plan(
+            llm,
+            search_plan_prompt,
+            request_body.question,
+            conversation_context
+        )
+        print(f"✅ Plano: {len(search_plan)} chars")
 
-                # Construir contexto dos livros
-                context = "\n\n---\n\n".join([
-                    f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
-                    for doc in sources
-                ])
+        # PHASE 3: Search books
+        print("📚 Fase 2: Buscando nos livros...")
+        sources = prioritized_search(
+            vectorstore,
+            request_body.question,
+            k=request_body.top_k,
+            fetch_k=request_body.fetch_k
+        )
 
-                # Fase 2: Validar com os livros
-                print("📚 Fase 2: Validando com os livros...")
+        for source in sources:
+            source_path = source.metadata.get('source', '')
+            source.metadata['priority'] = get_book_priority(source_path)
 
-                validation_prompt = create_validation_prompt()
-                formatted_validation = validation_prompt.format(
-                    conversation_context=conversation_context,
-                    question=request_body.question,
-                    preview_answer=preview_answer,
-                    context=context
-                )
+        print(f"✅ Fontes: {len(sources)} trechos")
 
-                validated_answer = quality_llm.invoke(formatted_validation)
+        # PHASE 4: Generate answer
+        print("💬 Fase 3: Gerando resposta...")
+        context = "\n\n---\n\n".join([
+            f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
+            for doc in sources
+        ])
 
-                # Extrair notas de validação
-                final_answer, validation_notes = extract_validation_notes(validated_answer)
+        answer_prompt = create_answer_prompt()
+        formatted_answer = answer_prompt.format(
+            conversation_context=conversation_context,
+            question=request_body.question,
+            context=context
+        )
 
-                print(f"✅ Validação completa!")
-            
-        else:
-            # ============================================================
-            # MODO NORMAL: Somente busca + resposta
-            # ============================================================
-            
-            print("📚 Modo normal: Buscando nos livros...")
-            
-            sources = prioritized_search(
-                vectorstore,
-                request_body.question,
-                k=request_body.top_k,
-                fetch_k=request_body.fetch_k
-            )
-            
-            for source in sources:
-                source_path = source.metadata.get('source', '')
-                source.metadata['priority'] = get_book_priority(source_path)
-            
-            context = "\n\n---\n\n".join([
-                f"[{get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
-                for doc in sources
-            ])
-            
-            # Prompt simples
-            simple_template = """Você é um assistente especializado em Espiritismo.
+        final_answer = llm.invoke(formatted_answer)
 
-INSTRUÇÕES:
-1. Responda em português brasileiro
-2. PRIORIZE O Livro dos Espíritos
-3. SEMPRE cite as fontes com precisão
-
-{conversation_context}
-
-CONTEXTO DOS LIVROS:
-{context}
-
-PERGUNTA: {question}
-
-RESPOSTA:"""
-            
-            simple_prompt = PromptTemplate(
-                template=simple_template,
-                input_variables=["conversation_context", "context", "question"]
-            )
-            
-            formatted = simple_prompt.format(
-                conversation_context=conversation_context,
-                context=context,
-                question=request_body.question
-            )
-            
-            final_answer = quality_llm.invoke(formatted)
-            preview_answer = None
-            validation_notes = None
-        
-        # Formatar sources
+        # Format sources
         formatted_sources = []
         for source in sources:
             source_path = source.metadata.get('source', 'Desconhecido')
             priority = source.metadata.get('priority', 10)
-            
+
             priority_label = (
                 "PRIORIDADE MÁXIMA" if priority >= 100 else
                 "OBRA FUNDAMENTAL" if priority >= 70 else
                 "COMPLEMENTAR" if priority >= 40 else
                 "OUTRAS OBRAS"
             )
-            
+
             formatted_sources.append(Source(
                 content=source.page_content[:500],
                 source=os.path.basename(source_path),
@@ -732,33 +673,32 @@ RESPOSTA:"""
                 priority_label=priority_label,
                 display_name=get_book_display_name(source_path)
             ))
-        
+
         processing_time = time.time() - start_time
         print(f"✅ Concluído em {processing_time:.2f}s")
         print(f"{'='*70}\n")
-        
+
         response_data = {
             "task_id": task_id,
             "answer": final_answer,
             "sources": [s.dict() for s in formatted_sources],
             "processing_time": processing_time,
             "from_cache": False,
-            "has_preview": request_body.enable_preview,
-            "preview_answer": preview_answer,
-            "validation_notes": validation_notes
+            "search_plan": search_plan,
+            "out_of_scope": False
         }
-        
+
         # Cache
         if request_body.use_cache:
             response_cache.set(
                 request_body.question,
-                QUALITY_MODEL,
+                MODEL,
                 request_body.temperature,
                 response_data
             )
-        
+
         return QueryResponse(**response_data)
-        
+
     except Exception as e:
         print(f"❌ Erro: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
