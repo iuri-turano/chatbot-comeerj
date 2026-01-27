@@ -20,168 +20,18 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for chat bubbles, avatars, and better UI
-st.markdown("""
-<style>
-    /* Main container */
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    
-    /* Chat message styling */
-    .stChatMessage {
-        padding: 1rem !important;
-        border-radius: 10px !important;
-        margin-bottom: 1rem !important;
-    }
-    
-    /* User message bubble */
-    .stChatMessage[data-testid="user-message"] {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-        color: white !important;
-    }
-    
-    /* Assistant message bubble */
-    .stChatMessage[data-testid="assistant-message"] {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%) !important;
-        color: white !important;
-    }
-    
-    /* Preview answer box */
-    .preview-box {
-        background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
-        border-left: 4px solid #667eea;
-        padding: 1rem;
-        border-radius: 8px;
-        margin-bottom: 1rem;
-    }
-    
-    /* Source cards */
-    .source-card {
-        background-color: rgba(255, 255, 255, 0.05);
-        border-left: 4px solid #667eea;
-        padding: 1rem;
-        margin: 0.5rem 0;
-        border-radius: 8px;
-    }
-    
-    .source-card.priority-max {
-        border-left-color: #ffd700;
-    }
-    
-    .source-card.priority-high {
-        border-left-color: #ff6b6b;
-    }
-    
-    .source-card.priority-medium {
-        border-left-color: #4ecdc4;
-    }
-    
-    /* Priority badges */
-    .priority-badge {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        margin-right: 0.5rem;
-    }
-    
-    .badge-max {
-        background: linear-gradient(135deg, #ffd700 0%, #ffed4e 100%);
-        color: #333;
-    }
-    
-    .badge-high {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ff8e8e 100%);
-        color: white;
-    }
-    
-    .badge-medium {
-        background: linear-gradient(135deg, #4ecdc4 0%, #44a3a3 100%);
-        color: white;
-    }
-    
-    .badge-low {
-        background: linear-gradient(135deg, #95a5a6 0%, #7f8c8d 100%);
-        color: white;
-    }
-    
-    /* Typing animation */
-    .typing-cursor {
-        display: inline-block;
-        width: 2px;
-        height: 1em;
-        background-color: currentColor;
-        margin-left: 2px;
-        animation: blink 1s step-end infinite;
-    }
+# Import theme system
+from themes import THEMES, get_theme_css
 
-    @keyframes blink {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0; }
-    }
+# Initialize theme in session state
+if "theme" not in st.session_state:
+    st.session_state.theme = "dark"
 
-    .typing-text {
-        display: inline;
-    }
+# Inject theme CSS (replaces old hardcoded CSS)
+st.markdown(get_theme_css(st.session_state.theme), unsafe_allow_html=True)
 
-    /* Feedback buttons */
-    .stButton button {
-        border-radius: 8px !important;
-        font-weight: 500 !important;
-        transition: all 0.3s ease !important;
-    }
-
-    .stButton button:hover {
-        transform: translateY(-2px) !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
-    }
-    
-    /* Sidebar styling */
-    .css-1d391kg {
-        background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
-    }
-    
-    /* Expander styling */
-    .streamlit-expanderHeader {
-        font-weight: 600 !important;
-        color: #667eea !important;
-    }
-    
-    /* Chat input */
-    .stChatInputContainer {
-        border-top: 2px solid #667eea;
-        padding-top: 1rem;
-    }
-    
-    /* Conversation history item */
-    .conv-item {
-        padding: 0.75rem;
-        margin: 0.5rem 0;
-        border-radius: 8px;
-        background-color: rgba(255, 255, 255, 0.05);
-        cursor: pointer;
-        transition: all 0.3s ease;
-    }
-    
-    .conv-item:hover {
-        background-color: rgba(255, 255, 255, 0.1);
-        transform: translateX(5px);
-    }
-    
-    /* Validation notes */
-    .validation-notes {
-        background: rgba(78, 205, 196, 0.1);
-        border-left: 3px solid #4ecdc4;
-        padding: 0.75rem;
-        border-radius: 6px;
-        margin-top: 0.5rem;
-        font-size: 0.9rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Old CSS below is now replaced by theme system (commented out)
+# CSS is now managed by themes.py and injected above
 
 # API Configuration
 try:
@@ -459,7 +309,25 @@ def main():
             st.code(f"API URL: {API_URL}")
         
         st.markdown("---")
-        
+
+        # Theme toggle
+        st.header("🎨 Tema")
+        col_dark, col_light = st.columns(2)
+
+        with col_dark:
+            if st.button("🌙 Escuro", use_container_width=True,
+                        disabled=st.session_state.theme == "dark"):
+                st.session_state.theme = "dark"
+                st.rerun()
+
+        with col_light:
+            if st.button("☀️ Claro", use_container_width=True,
+                        disabled=st.session_state.theme == "light"):
+                st.session_state.theme = "light"
+                st.rerun()
+
+        st.markdown("---")
+
         # User identification
         st.header("👤 Identificação")
         user_name = st.text_input(
@@ -595,7 +463,18 @@ def main():
     
     # Display chat history
     for idx, message in enumerate(st.session_state.messages):
-        with st.chat_message(message["role"], avatar="🧑" if message["role"] == "user" else "🤖"):
+        # Select avatar
+        if message["role"] == "user":
+            avatar = "🧑"
+        else:
+            # Try to use Chico Xavier avatar, fallback to emoji
+            avatar_path = "assets/avatars/chico_xavier.png"
+            if os.path.exists(avatar_path):
+                avatar = avatar_path
+            else:
+                avatar = "🤖"  # Fallback emoji
+
+        with st.chat_message(message["role"], avatar=avatar):
             if message["role"] == "user":
                 st.markdown(message["content"])
             else:
@@ -614,7 +493,11 @@ def main():
             st.markdown(prompt)
         
         # Get assistant response
-        with st.chat_message("assistant", avatar="🤖"):
+        # Select avatar
+        avatar_path = "assets/avatars/chico_xavier.png"
+        assistant_avatar = avatar_path if os.path.exists(avatar_path) else "🤖"
+
+        with st.chat_message("assistant", avatar=assistant_avatar):
             try:
                 if enable_preview:
                     # STREAMING MODE - Show search plan first, then final answer
