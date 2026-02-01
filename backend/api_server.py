@@ -372,16 +372,21 @@ def build_context_with_history(conversation_history: List[Message], max_history:
 def create_llm_and_prompt(model_name: str, temperature: float):
     """Create LLM and prompt template"""
     
-    template = """Você é um assistante especializado em Espiritismo e Doutrina Espírita.
+    template = """Você é um assistente especializado em Espiritismo e Doutrina Espírita.
 
 REGRA FUNDAMENTAL - VALIDAÇÃO DE CONTEXTO:
-- Você SOMENTE responde perguntas sobre Espiritismo, Doutrina Espírita e obras de Allan Kardec
-- Se a pergunta NÃO for sobre estes temas, responda EXATAMENTE:
-  "Desculpe, sou um assistente especializado em Espiritismo e Doutrina Espírita.
-   Só posso responder perguntas relacionadas às obras de Allan Kardec e aos
-   ensinamentos espíritas. Por favor, faça uma pergunta sobre Espiritismo."
-- NÃO tente responder perguntas sobre: culinária, esportes, política, tecnologia,
-  entretenimento, ou qualquer assunto não relacionado ao Espiritismo
+Você é ESPECIALISTA em Espiritismo e SOMENTE responde perguntas relacionadas a:
+- Espiritismo, Doutrina Espírita, Codificação Espírita
+- Allan Kardec e suas obras (Livro dos Espíritos, Livro dos Médiuns, Evangelho, Gênese, Céu e Inferno)
+- Conceitos espíritas: reencarnação, mediunidade, perispírito, evolução espiritual, etc.
+- Vida após a morte, mundo espiritual, comunicação com espíritos
+- Moral, caridade, amor ao próximo segundo o Espiritismo
+- Qualquer tópico presente nas obras da Codificação
+
+Se a pergunta NÃO for sobre Espiritismo, responda APENAS:
+"Desculpe, sou um assistente especializado em Espiritismo e Doutrina Espírita. Só posso responder perguntas sobre os ensinamentos de Allan Kardec e a Codificação Espírita. Por favor, faça uma pergunta relacionada ao Espiritismo."
+
+IMPORTANTE: Perguntas válidas sobre Espiritismo incluem questões gerais como "O que é espiritismo?", "Quem foi Allan Kardec?", "Explique a reencarnação", etc. Responda a TODAS as perguntas sobre Espiritismo, mesmo as mais básicas.
 
 INSTRUÇÕES IMPORTANTES (apenas para perguntas VÁLIDAS sobre Espiritismo):
 1. Responda SEMPRE em português brasileiro correto e fluente
@@ -611,7 +616,15 @@ async def query_stream(request: QueryRequest):
                 yield f"data: {json.dumps({'type': 'sources', 'sources': []})}\n\n"
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-            return StreamingResponse(generate_rejection(), media_type="text/event-stream")
+            return StreamingResponse(
+                generate_rejection(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",  # Disable nginx buffering
+                    "Connection": "keep-alive",
+                }
+            )
 
         print(f"✅ Pergunta validada (score: {confidence:.2f})")
 
@@ -664,17 +677,16 @@ async def query_stream(request: QueryRequest):
             status_tracker.update_task(task_id, "generating_answer", 70)
             yield f"data: {json.dumps({'type': 'status', 'stage': 'generating', 'progress': 70})}\n\n"
 
-            # Stream tokens (character by character for smoother display)
+            # Stream character by character for smooth letter-by-letter display
             import time
+
             for chunk in llm.stream(formatted_prompt):
-                # Split chunk into smaller pieces for smoother streaming
-                # Send every 2-3 characters for natural reading pace
-                chunk_size = 3
-                for i in range(0, len(chunk), chunk_size):
-                    mini_chunk = chunk[i:i+chunk_size]
-                    yield f"data: {json.dumps({'type': 'token', 'content': mini_chunk})}\n\n"
-                    # Tiny delay for smoother display (optional, comment out if too slow)
-                    # time.sleep(0.01)
+                # Send each character individually for true letter-by-letter streaming
+                for char in chunk:
+                    yield f"data: {json.dumps({'type': 'token', 'content': char})}\n\n"
+                    # Small delay for natural reading pace (adjust as needed)
+                    # 0.005s = 5ms per character = ~200 chars/second = natural reading speed
+                    time.sleep(0.005)
             
             # Send sources
             formatted_sources = []
@@ -709,8 +721,16 @@ async def query_stream(request: QueryRequest):
             print(f"❌ Erro no streaming: {str(e)}")
             status_tracker.complete_request(task_id, success=False, error=str(e))
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
-    
-    return StreamingResponse(generate(), media_type="text/event-stream")
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Connection": "keep-alive",
+        }
+    )
 
 if __name__ == "__main__":
     import uvicorn

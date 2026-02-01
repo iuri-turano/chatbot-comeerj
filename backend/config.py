@@ -155,11 +155,15 @@ def get_book_display_name(source_path: str) -> str:
 # CONTEXT VALIDATION SETTINGS
 # ============================================================================
 
-# Context validation threshold (0.0 a 1.0)
-# - 0.25-0.30: Muito permissivo (aceita mais perguntas)
-# - 0.35-0.40: Balanceado (recomendado)
-# - 0.45-0.50: Restritivo (pode rejeitar perguntas válidas)
-CONTEXT_VALIDATION_THRESHOLD = 0.35
+# VALIDAÇÃO SEMÂNTICA (usando embeddings)
+# O ContextValidator compara a similaridade da pergunta com exemplos espíritas vs não-espíritas
+# Threshold = diferença mínima entre scores (0.10 = pergunta deve ser 10% mais similar a espírita)
+#
+# Valores recomendados:
+# - 0.05: Mais permissivo (aceita perguntas tangencialmente relacionadas)
+# - 0.10: Balanceado (padrão) - boa detecção sem muitos falsos positivos
+# - 0.15: Mais restritivo (apenas perguntas claramente espíritas)
+CONTEXT_VALIDATION_THRESHOLD = 0.10  # Diferença mínima entre score espírita e não-espírita
 
 # Score mínimo dos resultados de busca
 MIN_SEARCH_SCORE = 0.4

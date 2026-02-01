@@ -225,7 +225,7 @@ def query_api(question: str, model_name: str, temperature: float, top_k: int, fe
         raise Exception(f"❌ Erro: {str(e)}")
 
 def stream_api_response(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None):
-    """Stream response from API"""
+    """Stream response from API with character-by-character support"""
     try:
         # Prepare conversation history
         api_history = []
@@ -235,7 +235,7 @@ def stream_api_response(question: str, model_name: str, temperature: float, top_
                     "role": msg["role"],
                     "content": msg["content"]
                 })
-        
+
         response = requests.post(
             f"{API_URL}/query_stream",
             json={
@@ -250,29 +250,42 @@ def stream_api_response(question: str, model_name: str, temperature: float, top_
             timeout=600  # 10 minutes timeout
         )
         response.raise_for_status()
-        
+
         full_text = ""
         sources = None
-        
-        for line in response.iter_lines():
+        char_buffer = ""
+        buffer_size = 2  # Batch 2 characters at a time for smoother display
+
+        for line in response.iter_lines(decode_unicode=True):
             if line:
-                line = line.decode('utf-8')
                 if line.startswith('data: '):
                     import json
                     data = json.loads(line[6:])
-                    
+
                     if data['type'] == 'token':
+                        char_buffer += data['content']
                         full_text += data['content']
-                        yield data['content'], None
+
+                        # Yield buffer when it reaches buffer_size or immediately for spaces/punctuation
+                        if len(char_buffer) >= buffer_size or data['content'] in [' ', '.', ',', '!', '?', '\n']:
+                            yield char_buffer, None
+                            char_buffer = ""
                     elif data['type'] == 'sources':
+                        # Flush any remaining characters in buffer
+                        if char_buffer:
+                            yield char_buffer, None
+                            char_buffer = ""
                         sources = data['sources']
                     elif data['type'] == 'done':
+                        # Flush any remaining characters
+                        if char_buffer:
+                            yield char_buffer, None
                         break
                     elif data['type'] == 'error':
                         raise Exception(data['content'])
-        
+
         return full_text, sources
-        
+
     except requests.exceptions.Timeout:
         raise Exception("⏱️ Timeout: A resposta demorou muito.")
     except Exception as e:
@@ -587,6 +600,8 @@ def main():
                                 status_placeholder.empty()
                             # Display with blinking cursor for streaming effect
                             response_placeholder.markdown(full_response + " ▌")
+                            # Small delay to allow Streamlit to render the update
+                            time.sleep(0.01)
                         if chunk_sources:
                             sources = chunk_sources
 
