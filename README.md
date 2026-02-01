@@ -6,7 +6,7 @@ Sistema de assistente conversacional especializado em Doutrina Espírita, utiliz
 
 - **Priorização de Fontes**: Sistema que prioriza O Livro dos Espíritos sobre demais obras
 - **Busca Semântica**: ChromaDB com embeddings multilíngues otimizados para português
-- **LLM Local**: Ollama com modelo Qwen2.5:7b rodando localmente
+- **LLM Local**: Ollama com modelo Llama 3.2:3b rodando localmente
 - **Interface Web**: Streamlit com feedback colaborativo
 - **Arquitetura Cliente-Servidor**: Backend local (GPU) + Frontend na nuvem
 
@@ -46,7 +46,7 @@ Sistema de assistente conversacional especializado em Doutrina Espírita, utiliz
 ### Backend
 - **FastAPI**: API REST
 - **Ollama**: Servidor LLM local
-- **Qwen2.5:7b**: Modelo de linguagem otimizado para português
+- **Llama 3.2:3b**: Modelo de linguagem otimizado para português
 - **ChromaDB**: Banco de dados vetorial
 - **LangChain**: Framework RAG
 - **Sentence Transformers**: Embeddings multilíngues
@@ -88,7 +88,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 # Baixar de: https://ollama.com/download
 
 # Baixar modelo
-ollama pull qwen2.5:7b
+ollama pull llama3.2:3b
 
 # Adicionar livros espíritas em PDF na pasta books/
 
@@ -186,7 +186,7 @@ curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "question": "O que é o perispírito?",
-    "model_name": "qwen2.5:7b",
+    "model_name": "llama3.2:3b",
     "temperature": 0.3,
     "top_k": 8,
     "fetch_k": 20
@@ -240,12 +240,12 @@ BOOK_PRIORITIES = {
 ollama list
 
 # Baixar novo modelo
-ollama pull llama3.1:8b
+ollama pull llama3.2:1b
 
 # Atualizar no frontend (sidebar)
 model_name = st.selectbox(
     "Modelo:",
-    ["qwen2.5:7b", "llama3.1:8b", "mistral"],  # Adicionar aqui
+    ["llama3.2:3b", "llama3.2:1b", "llama3.2:1b"],  # Adicionar aqui
 )
 ```
 
@@ -337,7 +337,7 @@ python process_books.py
 1. **Temperatura muito alta**: Reduzir para 0.1-0.3
 2. **Poucos trechos**: Aumentar `top_k` para 10-12
 3. **Busca limitada**: Aumentar `fetch_k` para 30-40
-4. **Modelo inadequado**: Testar outros modelos (llama3.1:8b)
+4. **Modelo inadequado**: Testar outros modelos (llama3.2:1b)
 
 ## 📚 Documentação Adicional
 

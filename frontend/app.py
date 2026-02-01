@@ -344,8 +344,8 @@ def main():
         
         model_name = st.selectbox(
             "Modelo:",
-            ["qwen2.5:7b", "llama3.2:3b", "llama3.2:1b"],
-            help="qwen2.5:7b recomendado para melhor qualidade em português"
+            ["llama3.2:3b", "llama3.2:1b"],
+            help="llama3.2:3b recomendado para melhor desempenho"
         )
         
         temperature = st.slider(

@@ -109,7 +109,7 @@ curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "question": "O que é reencarnação?",
-    "model_name": "qwen2.5:7b",
+    "model_name": "llama3.2:3b",
     "temperature": 0.3,
     "top_k": 3,
     "fetch_k": 15
@@ -120,7 +120,7 @@ curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "question": "Qual a receita de bolo de chocolate?",
-    "model_name": "qwen2.5:7b",
+    "model_name": "llama3.2:3b",
     "temperature": 0.3,
     "top_k": 3,
     "fetch_k": 15

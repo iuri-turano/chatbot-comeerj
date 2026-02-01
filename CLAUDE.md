@@ -75,8 +75,8 @@ Criar uma experiência similar ao **Perplexity Chat** onde:
 ┌───────▼────────┐  ┌──────▼──────┐  ┌───▼──────────┐
 │   ChromaDB     │  │   Ollama    │  │  PyTorch     │
 │  (Vector DB)   │  │  (LLM Local)│  │  (Embeddings)│
-│  - Embeddings  │  │  - Qwen2.5  │  │  - GPU/CPU   │
-│  - Busca       │  │  - 7B params│  │  - CUDA/MPS  │
+│  - Embeddings  │  │  - Llama 3.2  │  │  - GPU/CPU   │
+│  - Busca       │  │  - 3B params│  │  - CUDA/MPS  │
 │    Semântica   │  │             │  │              │
 └────────────────┘  └─────────────┘  └──────────────┘
 ```
@@ -95,7 +95,7 @@ Criar uma experiência similar ao **Perplexity Chat** onde:
 
 ### Backend
 - **FastAPI** - Framework web assíncrono
-- **Ollama** - Servidor LLM local (roda Qwen2.5:7b)
+- **Ollama** - Servidor LLM local (roda Llama 3.2:3b)
 - **ChromaDB** - Banco de dados vetorial
 - **LangChain** - Framework para RAG
 - **Sentence Transformers** - Embeddings multilíngues (paraphrase-multilingual-mpnet-base-v2)
@@ -106,7 +106,7 @@ Criar uma experiência similar ao **Perplexity Chat** onde:
 - **Requests** - Cliente HTTP para API
 
 ### Modelo LLM
-- **Qwen2.5:7b** - Modelo otimizado para português (padrão)
+- **Llama 3.2:3b** - Modelo otimizado para português (padrão)
 - Suporta outros: llama3.2:3b, llama3.2:1b
 
 ## 📦 Instalação e Configuração
@@ -133,7 +133,7 @@ Criar uma experiência similar ao **Perplexity Chat** onde:
 ollama --version
 
 # Baixar modelo
-ollama pull qwen2.5:7b
+ollama pull llama3.2:3b
 ```
 
 #### Mac:
@@ -143,7 +143,7 @@ ollama pull qwen2.5:7b
 brew install ollama
 
 # Baixar modelo
-ollama pull qwen2.5:7b
+ollama pull llama3.2:3b
 ```
 
 ### 2️⃣ Setup do Backend
@@ -529,7 +529,7 @@ curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
   -d '{
     "question": "O que é o perispírito?",
-    "model_name": "qwen2.5:7b",
+    "model_name": "llama3.2:3b",
     "temperature": 0.3,
     "top_k": 3,
     "fetch_k": 15
@@ -749,7 +749,7 @@ ollama pull nome-do-modelo
 # Editar frontend/app.py
 model_name = st.selectbox(
     "Modelo:",
-    ["qwen2.5:7b", "llama3.2:3b", "nome-do-modelo"]
+    ["llama3.2:3b", "llama3.2:3b", "nome-do-modelo"]
 )
 ```
 
@@ -826,12 +826,12 @@ Ou via API:
 # Pergunta válida
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "O que é reencarnação?", "model_name": "qwen2.5:7b"}'
+  -d '{"question": "O que é reencarnação?", "model_name": "llama3.2:3b"}'
 
 # Pergunta inválida (será rejeitada)
 curl -X POST http://localhost:8000/query \
   -H "Content-Type: application/json" \
-  -d '{"question": "Qual a receita de bolo?", "model_name": "qwen2.5:7b"}'
+  -d '{"question": "Qual a receita de bolo?", "model_name": "llama3.2:3b"}'
 ```
 
 ---
