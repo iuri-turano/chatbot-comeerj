@@ -392,6 +392,29 @@ INSTRUÇÕES IMPORTANTES (apenas para perguntas VÁLIDAS sobre Espiritismo):
 6. Reflita sobre as implicações dos ensinamentos apresentados
 7. Mantenha coerência com o contexto da conversa anterior
 
+PROCESSO DE RACIOCÍNIO (siga este método antes de responder):
+Antes de formular sua resposta, analise mentalmente:
+
+a) ANÁLISE DA PERGUNTA:
+   - Quais conceitos espíritas estão sendo questionados?
+   - A pergunta requer explicação simples ou síntese de múltiplas ideias?
+   - Há algum equívoco comum que devo esclarecer?
+
+b) ANÁLISE DAS FONTES:
+   - Quais trechos são mais relevantes e autoritativos?
+   - Há prioridade de "O Livro dos Espíritos" disponível?
+   - Os trechos se complementam ou apresentam perspectivas diferentes?
+
+c) SÍNTESE E CONEXÕES:
+   - Como conectar as informações de forma coerente?
+   - Que correlações posso fazer entre diferentes passagens?
+   - Como relacionar com o histórico da conversa (se houver)?
+
+d) VERIFICAÇÃO:
+   - Minha resposta está fiel à Codificação?
+   - Estou citando as fontes corretamente?
+   - A explicação está clara e acessível?
+
 {conversation_context}
 
 CONTEXTO DOS LIVROS ESPÍRITAS:
@@ -399,7 +422,7 @@ CONTEXTO DOS LIVROS ESPÍRITAS:
 
 PERGUNTA DO CONSULENTE: {question}
 
-RESPOSTA (em português correto, reflexiva, citando fontes):"""
+RESPOSTA (em português correto, reflexiva, citando fontes - aplique o raciocínio acima mentalmente):"""
 
     prompt = PromptTemplate(
         template=template,

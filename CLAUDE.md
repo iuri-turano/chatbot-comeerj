@@ -75,9 +75,9 @@ Criar uma experiência similar ao **Perplexity Chat** onde:
 ┌───────▼────────┐  ┌──────▼──────┐  ┌───▼──────────┐
 │   ChromaDB     │  │   Ollama    │  │  PyTorch     │
 │  (Vector DB)   │  │  (LLM Local)│  │  (Embeddings)│
-│  - Embeddings  │  │  - Llama 3.2  │  │  - GPU/CPU   │
-│  - Busca       │  │  - 3B params│  │  - CUDA/MPS  │
-│    Semântica   │  │             │  │              │
+│  - Embeddings  │  │  - Llama    │  │  - GPU/CPU   │
+│  - Busca       │  │  - 3B/8B    │  │  - CUDA/MPS  │
+│    Semântica   │  │  - CoT      │  │              │
 └────────────────┘  └─────────────┘  └──────────────┘
 ```
 
@@ -95,7 +95,7 @@ Criar uma experiência similar ao **Perplexity Chat** onde:
 
 ### Backend
 - **FastAPI** - Framework web assíncrono
-- **Ollama** - Servidor LLM local (roda Llama 3.2:3b)
+- **Ollama** - Servidor LLM local (roda Llama 3.2:3b (Mac) / 3.1:8b (Windows))
 - **ChromaDB** - Banco de dados vetorial
 - **LangChain** - Framework para RAG
 - **Sentence Transformers** - Embeddings multilíngues (paraphrase-multilingual-mpnet-base-v2)
@@ -105,9 +105,24 @@ Criar uma experiência similar ao **Perplexity Chat** onde:
 - **Streamlit** - Interface web interativa
 - **Requests** - Cliente HTTP para API
 
-### Modelo LLM
-- **Llama 3.2:3b** - Modelo otimizado para português (padrão)
-- Suporta outros: llama3.2:3b, llama3.2:1b
+### Modelo LLM com Chain-of-Thought Reasoning
+
+**OS-Specific Models:**
+- **Mac M4 16GB**: Llama 3.2:3b
+  - 3 bilhões de parâmetros
+  - ~2GB RAM
+  - Otimizado para Apple Silicon
+
+- **Windows RTX 3070**: Llama 3.1:8b
+  - 8 bilhões de parâmetros
+  - ~5GB RAM
+  - GPU accelerated
+
+**Reasoning Enhancement:**
+- Chain-of-Thought prompting integrado
+- Análise sistemática antes de responder
+- Síntese melhorada de múltiplas fontes
+- Verificação de alinhamento doutrinário
 
 ## 📦 Instalação e Configuração
 
@@ -116,12 +131,14 @@ Criar uma experiência similar ao **Perplexity Chat** onde:
 #### Para Windows (NVIDIA GPU)
 - Python 3.11+
 - NVIDIA GPU (RTX 3070 ou superior)
+- **RAM: 16GB mínimo** (llama3.1:8b requer ~5GB)
 - NVIDIA CUDA Toolkit 11.8+
 - Ollama for Windows
 
 #### Para Mac (Apple Silicon)
 - Python 3.11+
 - Mac com chip M1/M2/M3/M4
+- **RAM: 8GB mínimo** (llama3.2:3b requer ~2GB)
 - Ollama for macOS
 
 ### 1️⃣ Instalação do Ollama

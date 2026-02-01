@@ -3,8 +3,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Local model configuration
-LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", "llama3.2:3b")
+# Local model configuration - OS-specific
+import platform
+
+def get_default_model():
+    """Select model based on operating system and hardware"""
+    system = platform.system().lower()
+
+    if system == "darwin":  # macOS
+        # Mac M4 16GB - use 3B model (fits in memory)
+        return "llama3.2:3b"
+    elif system == "windows":
+        # Windows with RTX 3070 8GB + 32GB RAM - use 8B model
+        return "llama3.1:8b"
+    elif system == "linux":
+        # Linux - default to 3B (can be overridden with env var)
+        return "llama3.2:3b"
+    else:
+        return "llama3.2:3b"
+
+LOCAL_MODEL_NAME = os.getenv("LOCAL_MODEL_NAME", get_default_model())
 DEFAULT_TEMPERATURE = float(os.getenv("DEFAULT_TEMPERATURE", "0.3"))
 
 # Paths

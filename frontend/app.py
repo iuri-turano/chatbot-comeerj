@@ -342,10 +342,24 @@ def main():
         # Model settings
         st.header("⚙️ Configurações")
         
+        # OS-specific model selection
+        import platform
+        system = platform.system().lower()
+
+        if system == "darwin":  # macOS
+            available_models = ["llama3.2:3b", "llama3.2:1b"]
+            default_help = "llama3.2:3b otimizado para Mac M4 16GB com raciocínio aprimorado"
+        elif system == "windows":
+            available_models = ["llama3.1:8b", "llama3.2:3b", "llama3.2:1b"]
+            default_help = "llama3.1:8b otimizado para RTX 3070 8GB com raciocínio aprimorado"
+        else:  # Linux or other
+            available_models = ["llama3.2:3b", "llama3.1:8b", "llama3.2:1b"]
+            default_help = "Selecione o modelo adequado ao seu hardware"
+
         model_name = st.selectbox(
             "Modelo:",
-            ["llama3.2:3b", "llama3.2:1b"],
-            help="llama3.2:3b recomendado para melhor desempenho"
+            available_models,
+            help=default_help
         )
         
         temperature = st.slider(
