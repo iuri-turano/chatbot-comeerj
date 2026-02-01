@@ -663,10 +663,18 @@ async def query_stream(request: QueryRequest):
             
             status_tracker.update_task(task_id, "generating_answer", 70)
             yield f"data: {json.dumps({'type': 'status', 'stage': 'generating', 'progress': 70})}\n\n"
-            
-            # Stream tokens
+
+            # Stream tokens (character by character for smoother display)
+            import time
             for chunk in llm.stream(formatted_prompt):
-                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+                # Split chunk into smaller pieces for smoother streaming
+                # Send every 2-3 characters for natural reading pace
+                chunk_size = 3
+                for i in range(0, len(chunk), chunk_size):
+                    mini_chunk = chunk[i:i+chunk_size]
+                    yield f"data: {json.dumps({'type': 'token', 'content': mini_chunk})}\n\n"
+                    # Tiny delay for smoother display (optional, comment out if too slow)
+                    # time.sleep(0.01)
             
             # Send sources
             formatted_sources = []

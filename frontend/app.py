@@ -153,10 +153,26 @@ st.markdown("""
         animation: pulse 1.5s ease-in-out infinite;
         margin-right: 8px;
     }
-    
+
     @keyframes pulse {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.3; }
+    }
+
+    /* Blinking cursor effect for streaming */
+    @keyframes blink {
+        0%, 49% { opacity: 1; }
+        50%, 100% { opacity: 0; }
+    }
+
+    /* Smooth text appearance */
+    .stMarkdown p {
+        animation: fadeIn 0.2s ease-in;
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0.8; }
+        to { opacity: 1; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -550,24 +566,32 @@ def main():
         # Get assistant response
         with st.chat_message("assistant", avatar="🤖"):
             if enable_streaming:
-                # Streaming response
+                # Streaming response with real-time display
                 response_placeholder = st.empty()
+                status_placeholder = st.empty()
                 full_response = ""
                 sources = None
-                
+
                 try:
-                    with st.spinner("🔍 Consultando os livros..."):
-                        for chunk, chunk_sources in stream_api_response(
-                            prompt, model_name, temperature, top_k, fetch_k,
-                            st.session_state.messages[:-1]  # Exclude current question
-                        ):
-                            if chunk:
-                                full_response += chunk
-                                response_placeholder.markdown(full_response + "▌")
-                            if chunk_sources:
-                                sources = chunk_sources
-                        
-                        response_placeholder.markdown(full_response)
+                    # Show searching indicator
+                    status_placeholder.markdown("🔍 **Buscando nos livros espíritas...**")
+
+                    for chunk, chunk_sources in stream_api_response(
+                        prompt, model_name, temperature, top_k, fetch_k,
+                        st.session_state.messages[:-1]  # Exclude current question
+                    ):
+                        if chunk:
+                            full_response += chunk
+                            # Clear status once we start receiving text
+                            if len(full_response) > 0:
+                                status_placeholder.empty()
+                            # Display with blinking cursor for streaming effect
+                            response_placeholder.markdown(full_response + " ▌")
+                        if chunk_sources:
+                            sources = chunk_sources
+
+                    # Remove cursor when done
+                    response_placeholder.markdown(full_response)
                     
                     # Show sources
                     if sources:
