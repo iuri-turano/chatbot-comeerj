@@ -132,3 +132,28 @@ def get_book_display_name(source_path: str) -> str:
         return "📰 Revista Espírita"
     
     return os.path.basename(source_path)
+
+# ============================================================================
+# CONTEXT VALIDATION SETTINGS
+# ============================================================================
+
+# Context validation threshold (0.0 a 1.0)
+# - 0.25-0.30: Muito permissivo (aceita mais perguntas)
+# - 0.35-0.40: Balanceado (recomendado)
+# - 0.45-0.50: Restritivo (pode rejeitar perguntas válidas)
+CONTEXT_VALIDATION_THRESHOLD = 0.35
+
+# Score mínimo dos resultados de busca
+MIN_SEARCH_SCORE = 0.4
+
+# Mensagem de rejeição padrão
+REJECTION_MESSAGE = """Desculpe, sou um assistente especializado em Espiritismo e Doutrina Espírita.
+
+Só posso responder perguntas relacionadas às obras de Allan Kardec e aos ensinamentos espíritas.
+
+Por favor, faça uma pergunta sobre Espiritismo, como:
+- O que é reencarnação?
+- Como funciona a mediunidade?
+- O que Allan Kardec diz sobre a vida após a morte?
+- Qual o papel da caridade no Espiritismo?
+"""
