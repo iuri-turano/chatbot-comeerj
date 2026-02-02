@@ -179,3 +179,23 @@ Por favor, faça uma pergunta sobre Espiritismo, como:
 - O que Allan Kardec diz sobre a vida após a morte?
 - Qual o papel da caridade no Espiritismo?
 """
+
+# ============================================================================
+# MULTI-SEARCH SETTINGS
+# ============================================================================
+
+# Maximum number of searches per question
+MAX_SEARCHES = 5
+
+# Minimum number of searches (always 1)
+MIN_SEARCHES = 1
+
+# Complexity thresholds
+COMPLEXITY_THRESHOLD_L2 = 2  # Score to trigger Level 2
+COMPLEXITY_THRESHOLD_L3 = 5  # Score to trigger Level 3
+
+# Deduplication settings
+DEDUP_CONTENT_LENGTH = 200  # Characters to compare for duplicates
+
+# Enable/disable multi-search (feature flag for gradual rollout)
+ENABLE_MULTI_SEARCH = True  # Set to False to use legacy single search

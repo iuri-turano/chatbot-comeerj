@@ -13,10 +13,12 @@ from config import (
     get_book_priority,
     get_book_display_name,
     CONTEXT_VALIDATION_THRESHOLD,
-    REJECTION_MESSAGE
+    REJECTION_MESSAGE,
+    ENABLE_MULTI_SEARCH
 )
 from priority_retriever import prioritized_search
 from context_validator import ContextValidator
+from multi_search import MultiSearchEngine
 import torch
 import os
 import json
@@ -145,6 +147,7 @@ startup_time = time.time()
 # Global variables
 vectorstore = None
 context_validator = None
+multi_search_engine = None
 executor = ThreadPoolExecutor(max_workers=3)
 
 # ============================================================================
@@ -214,7 +217,7 @@ class TaskStatusResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Load vectorstore on startup"""
-    global vectorstore, context_validator, startup_time
+    global vectorstore, context_validator, multi_search_engine, startup_time
     
     startup_time = time.time()
     
@@ -253,6 +256,11 @@ async def startup_event():
     print("🔍 Inicializando validador de contexto...")
     context_validator = ContextValidator(embeddings)
     print("✅ Validador de contexto pronto!")
+
+    # Initialize multi-search engine
+    print("🔍 Inicializando motor de múltiplas buscas...")
+    multi_search_engine = MultiSearchEngine(vectorstore)
+    print("✅ Motor de múltiplas buscas pronto!")
     print("=" * 60)
     print("🌐 API pronta em: http://localhost:8000")
     print("📖 Documentação em: http://localhost:8000/docs")
@@ -494,18 +502,30 @@ async def query(request: QueryRequest):
             request.temperature
         )
         
-        # Update: Searching books
-        status_tracker.update_task(task_id, "searching_books", 30)
-        print(f"📖 Buscando nos livros espíritas...")
-        
-        sources = prioritized_search(
-            vectorstore, 
-            request.question, 
-            k=request.top_k, 
-            fetch_k=request.fetch_k
-        )
-        
-        print(f"✅ Encontradas {len(sources)} fontes relevantes")
+        # Update: Searching books (multi-search or single search based on feature flag)
+        status_tracker.update_task(task_id, "multi_searching", 30)
+
+        if ENABLE_MULTI_SEARCH and multi_search_engine:
+            print(f"🔍 Iniciando multi-search adaptativo...")
+            sources, search_metadata = multi_search_engine.multi_search(
+                request.question,
+                k=request.top_k,
+                fetch_k=request.fetch_k,
+                max_searches=5
+            )
+            print(f"✅ Multi-search: {search_metadata['num_searches']} buscas, "
+                  f"{search_metadata['unique_documents']} docs únicos")
+        else:
+            # Legacy single search (fallback)
+            print(f"📖 Usando busca única (legacy)...")
+            sources = prioritized_search(
+                vectorstore,
+                request.question,
+                k=request.top_k,
+                fetch_k=request.fetch_k
+            )
+            search_metadata = None
+            print(f"✅ Encontradas {len(sources)} fontes relevantes")
         
         # Add priority metadata
         for source in sources:
@@ -634,29 +654,47 @@ async def query_stream(request: QueryRequest):
         try:
             # Send task_id first
             yield f"data: {json.dumps({'type': 'task_id', 'task_id': task_id})}\n\n"
-            
+
+            # STAGE 1: Creating LLM (10%)
             status_tracker.update_task(task_id, "creating_llm", 10)
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'creating_llm', 'progress': 10, 'description': 'Criando modelo LLM'})}\n\n"
+
             llm, prompt_template = create_llm_and_prompt(
-                request.model_name, 
+                request.model_name,
                 request.temperature
             )
-            
-            status_tracker.update_task(task_id, "searching_books", 30)
-            yield f"data: {json.dumps({'type': 'status', 'stage': 'searching', 'progress': 30})}\n\n"
-            
-            sources = prioritized_search(
-                vectorstore, 
-                request.question, 
-                k=request.top_k, 
-                fetch_k=request.fetch_k
-            )
+
+            # STAGE 2: Searching books (30%)
+            status_tracker.update_task(task_id, "multi_searching", 30)
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'searching_books', 'progress': 30, 'description': 'Buscando nos livros espíritas'})}\n\n"
+
+            if ENABLE_MULTI_SEARCH and multi_search_engine:
+                sources, search_metadata = multi_search_engine.multi_search(
+                    request.question,
+                    k=request.top_k,
+                    fetch_k=request.fetch_k,
+                    max_searches=5
+                )
+                # Yield search info to frontend
+                yield f"data: {json.dumps({'type': 'search_info', 'num_searches': search_metadata['num_searches'], 'complexity_level': search_metadata['complexity_analysis']['complexity_level']})}\n\n"
+            else:
+                # Legacy single search
+                sources = prioritized_search(
+                    vectorstore,
+                    request.question,
+                    k=request.top_k,
+                    fetch_k=request.fetch_k
+                )
+                search_metadata = None
             
             for source in sources:
                 source_path = source.metadata.get('source', '')
                 source.metadata['priority'] = get_book_priority(source_path)
-            
+
+            # STAGE 3: Building context (50%)
             status_tracker.update_task(task_id, "building_context", 50)
-            
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'building_context', 'progress': 50, 'description': 'Construindo contexto'})}\n\n"
+
             context = "\n\n---\n\n".join([
                 f"[Trecho {i+1} - {get_book_display_name(doc.metadata.get('source', 'Desconhecido'))}]\n{doc.page_content}"
                 for i, doc in enumerate(sources)
@@ -673,9 +711,10 @@ async def query_stream(request: QueryRequest):
                 context=context,
                 question=request.question
             )
-            
+
+            # STAGE 4: Generating answer (70%)
             status_tracker.update_task(task_id, "generating_answer", 70)
-            yield f"data: {json.dumps({'type': 'status', 'stage': 'generating', 'progress': 70})}\n\n"
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'generating_answer', 'progress': 70, 'description': 'Gerando resposta'})}\n\n"
 
             # Stream character by character for smooth letter-by-letter display
             import time
@@ -687,7 +726,11 @@ async def query_stream(request: QueryRequest):
                     # Small delay for natural reading pace (adjust as needed)
                     # 0.005s = 5ms per character = ~200 chars/second = natural reading speed
                     time.sleep(0.005)
-            
+
+            # STAGE 5: Formatting response (90%)
+            status_tracker.update_task(task_id, "formatting_response", 90)
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'formatting_response', 'progress': 90, 'description': 'Formatando resposta'})}\n\n"
+
             # Send sources
             formatted_sources = []
             for source in sources:
@@ -713,8 +756,11 @@ async def query_stream(request: QueryRequest):
                 })
             
             yield f"data: {json.dumps({'type': 'sources', 'sources': formatted_sources})}\n\n"
+
+            # COMPLETE (100%)
+            yield f"data: {json.dumps({'type': 'status', 'stage': 'complete', 'progress': 100, 'description': 'Concluído'})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
-            
+
             status_tracker.complete_request(task_id, success=True)
             
         except Exception as e:

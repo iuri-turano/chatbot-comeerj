@@ -174,6 +174,66 @@ st.markdown("""
         from { opacity: 0.8; }
         to { opacity: 1; }
     }
+
+    /* Progress indicator styling */
+    .progress-container {
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        border: 1px solid rgba(102, 126, 234, 0.3);
+    }
+
+    .progress-stage {
+        display: flex;
+        align-items: center;
+        margin: 0.5rem 0;
+        font-size: 0.95rem;
+        color: #667eea;
+        font-weight: 500;
+    }
+
+    .progress-stage.active {
+        color: #4ecdc4;
+        font-weight: 600;
+    }
+
+    .progress-stage.completed {
+        color: #95a5a6;
+        opacity: 0.7;
+    }
+
+    .progress-icon {
+        margin-right: 0.75rem;
+        font-size: 1.2rem;
+    }
+
+    .progress-percentage {
+        margin-left: auto;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 0.25rem 0.75rem;
+        border-radius: 12px;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+
+    /* Stage-specific colors */
+    .stage-creating_llm { color: #3498db; }
+    .stage-searching_books { color: #e74c3c; }
+    .stage-building_context { color: #f39c12; }
+    .stage-generating_answer { color: #2ecc71; }
+    .stage-formatting_response { color: #9b59b6; }
+
+    /* Animated progress bar */
+    @keyframes progressAnimation {
+        0% { width: 0%; }
+        100% { width: 100%; }
+    }
+
+    .animated-progress {
+        animation: progressAnimation 0.5s ease-out;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -225,7 +285,7 @@ def query_api(question: str, model_name: str, temperature: float, top_k: int, fe
         raise Exception(f"❌ Erro: {str(e)}")
 
 def stream_api_response(question: str, model_name: str, temperature: float, top_k: int, fetch_k: int, conversation_history: list = None):
-    """Stream response from API with character-by-character support"""
+    """Stream response from API with status updates and character-by-character support"""
     try:
         # Prepare conversation history
         api_history = []
@@ -262,29 +322,45 @@ def stream_api_response(question: str, model_name: str, temperature: float, top_
                     import json
                     data = json.loads(line[6:])
 
-                    if data['type'] == 'token':
+                    if data['type'] == 'task_id':
+                        # Initial task ID
+                        pass
+
+                    elif data['type'] == 'status':
+                        # Status update event
+                        current_status = {
+                            'stage': data.get('stage'),
+                            'progress': data.get('progress'),
+                            'description': data.get('description')
+                        }
+                        yield None, None, current_status  # Yield status
+
+                    elif data['type'] == 'token':
                         char_buffer += data['content']
                         full_text += data['content']
 
                         # Yield buffer when it reaches buffer_size or immediately for spaces/punctuation
                         if len(char_buffer) >= buffer_size or data['content'] in [' ', '.', ',', '!', '?', '\n']:
-                            yield char_buffer, None
+                            yield char_buffer, None, None  # Yield text chunk
                             char_buffer = ""
+
                     elif data['type'] == 'sources':
                         # Flush any remaining characters in buffer
                         if char_buffer:
-                            yield char_buffer, None
+                            yield char_buffer, None, None
                             char_buffer = ""
                         sources = data['sources']
+
                     elif data['type'] == 'done':
                         # Flush any remaining characters
                         if char_buffer:
-                            yield char_buffer, None
+                            yield char_buffer, None, None
+                        # Final yield with sources
+                        yield None, sources, None
                         break
+
                     elif data['type'] == 'error':
                         raise Exception(data['content'])
-
-        return full_text, sources
 
     except requests.exceptions.Timeout:
         raise Exception("⏱️ Timeout: A resposta demorou muito.")
@@ -579,31 +655,64 @@ def main():
         # Get assistant response
         with st.chat_message("assistant", avatar="🤖"):
             if enable_streaming:
-                # Streaming response with real-time display
+                # Streaming response with real-time display and progress indicators
+                progress_placeholder = st.empty()
+                progress_bar = st.progress(0)
                 response_placeholder = st.empty()
-                status_placeholder = st.empty()
+
                 full_response = ""
                 sources = None
+                current_stage = None
 
                 try:
-                    # Show searching indicator
-                    status_placeholder.markdown("🔍 **Buscando nos livros espíritas...**")
-
-                    for chunk, chunk_sources in stream_api_response(
+                    for chunk, chunk_sources, status_update in stream_api_response(
                         prompt, model_name, temperature, top_k, fetch_k,
                         st.session_state.messages[:-1]  # Exclude current question
                     ):
-                        if chunk:
+                        # Handle status updates
+                        if status_update:
+                            current_stage = status_update
+                            progress = status_update['progress']
+                            description = status_update['description']
+
+                            # Update progress bar
+                            progress_bar.progress(progress / 100)
+
+                            # Update status text with emoji based on stage
+                            stage_emoji = {
+                                'creating_llm': '⚙️',
+                                'searching_books': '🔍',
+                                'building_context': '📚',
+                                'generating_answer': '🤖',
+                                'formatting_response': '✨',
+                                'complete': '✅'
+                            }
+                            emoji = stage_emoji.get(status_update['stage'], '🔄')
+
+                            progress_placeholder.markdown(
+                                f"**{emoji} {description}** ({progress}%)"
+                            )
+
+                        # Handle text chunks
+                        elif chunk:
+                            # Clear progress display when text starts (after generating_answer stage begins)
+                            if current_stage and current_stage.get('stage') == 'generating_answer' and len(full_response) == 0:
+                                progress_placeholder.empty()
+                                progress_bar.empty()
+
                             full_response += chunk
-                            # Clear status once we start receiving text
-                            if len(full_response) > 0:
-                                status_placeholder.empty()
                             # Display with blinking cursor for streaming effect
                             response_placeholder.markdown(full_response + " ▌")
                             # Small delay to allow Streamlit to render the update
                             time.sleep(0.01)
-                        if chunk_sources:
+
+                        # Handle sources
+                        elif chunk_sources:
                             sources = chunk_sources
+
+                    # Clear any remaining progress indicators
+                    progress_placeholder.empty()
+                    progress_bar.empty()
 
                     # Remove cursor when done
                     response_placeholder.markdown(full_response)
