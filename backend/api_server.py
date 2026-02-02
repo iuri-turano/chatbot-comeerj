@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -19,6 +19,8 @@ from config import (
 from priority_retriever import prioritized_search
 from context_validator import ContextValidator
 from multi_search import MultiSearchEngine
+import database
+import auth
 import torch
 import os
 import json
@@ -168,6 +170,7 @@ class QueryRequest(BaseModel):
 
 class Source(BaseModel):
     content: str
+    full_content: Optional[str] = None
     source: str
     page: int
     priority: int
@@ -211,6 +214,29 @@ class TaskStatusResponse(BaseModel):
     task_info: Optional[Dict]
 
 # ============================================================================
+# AUTH & CONVERSATION MODELS
+# ============================================================================
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    display_name: str = "Anônimo"
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class AuthResponse(BaseModel):
+    success: bool
+    token: Optional[str] = None
+    user: Optional[Dict] = None
+    error: Optional[str] = None
+
+class SaveConversationRequest(BaseModel):
+    title: str = "Conversa sem título"
+    messages: List[Dict]
+
+# ============================================================================
 # STARTUP
 # ============================================================================
 
@@ -220,11 +246,15 @@ async def startup_event():
     global vectorstore, context_validator, multi_search_engine, startup_time
     
     startup_time = time.time()
-    
+
     print("=" * 60)
-    print("🚀 Iniciando Assistente Espírita API v1.2.1")
-    print("   (Sistema de Status Dedicado)")
+    print("🚀 Iniciando Assistente Espírita API v1.3.0")
+    print("   (Auth + Chat Persistence + Status Tracking)")
     print("=" * 60)
+
+    # Initialize SQLite database
+    database.init_db()
+    print("✅ Banco de dados SQLite inicializado!")
     
     if not os.path.exists(DB_DIR):
         print(f"❌ Banco de dados não encontrado em: {DB_DIR}")
@@ -578,6 +608,7 @@ async def query(request: QueryRequest):
             
             formatted_sources.append(Source(
                 content=source.page_content[:500],
+                full_content=source.page_content,
                 source=os.path.basename(source_path),
                 page=source.metadata.get('page', 0),
                 priority=priority,
@@ -748,6 +779,7 @@ async def query_stream(request: QueryRequest):
                 
                 formatted_sources.append({
                     "content": source.page_content[:500],
+                    "full_content": source.page_content,
                     "source": os.path.basename(source_path),
                     "page": source.metadata.get('page', 0),
                     "priority": priority,
@@ -778,9 +810,105 @@ async def query_stream(request: QueryRequest):
         }
     )
 
+# ============================================================================
+# AUTH ENDPOINTS
+# ============================================================================
+
+@app.post("/auth/register", response_model=AuthResponse)
+async def register(request: RegisterRequest):
+    """Register a new user with email and password"""
+    success, result = auth.register_user(
+        request.email, request.password, request.display_name
+    )
+    if not success:
+        return AuthResponse(success=False, error=result.get("error"))
+    return AuthResponse(
+        success=True,
+        token=result["token"],
+        user=result["user"]
+    )
+
+@app.post("/auth/login", response_model=AuthResponse)
+async def login(request: LoginRequest):
+    """Login with email and password"""
+    success, result = auth.login_user(request.email, request.password)
+    if not success:
+        return AuthResponse(success=False, error=result.get("error"))
+    return AuthResponse(
+        success=True,
+        token=result["token"],
+        user=result["user"]
+    )
+
+@app.get("/auth/me")
+async def get_me(request: Request):
+    """Get current authenticated user"""
+    user = auth.get_optional_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Não autenticado.")
+    return {"success": True, "user": user}
+
+@app.post("/auth/logout")
+async def logout(request: Request):
+    """Logout and invalidate session"""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        auth.logout_user(auth_header[7:])
+    return {"success": True}
+
+# ============================================================================
+# CONVERSATION ENDPOINTS (AUTHENTICATED USERS)
+# ============================================================================
+
+@app.get("/conversations")
+async def list_conversations(request: Request, limit: int = 20):
+    """List conversations for authenticated user"""
+    user = auth.get_optional_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Não autenticado.")
+    conversations = database.get_conversations(user["id"], limit)
+    return {"conversations": conversations}
+
+@app.get("/conversations/{chat_id}")
+async def get_conversation(chat_id: str, request: Request):
+    """Get full conversation with messages"""
+    user = auth.get_optional_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Não autenticado.")
+    conversation = database.get_conversation(user["id"], chat_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada.")
+    return conversation
+
+@app.post("/conversations/{chat_id}")
+async def save_conversation(chat_id: str, request: Request, body: SaveConversationRequest):
+    """Save or update a conversation"""
+    user = auth.get_optional_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Não autenticado.")
+    conv_id = database.save_conversation(
+        user["id"], chat_id, body.title, body.messages
+    )
+    return {"success": True, "conversation_id": conv_id}
+
+@app.delete("/conversations/{chat_id}")
+async def delete_conv(chat_id: str, request: Request):
+    """Delete a conversation"""
+    user = auth.get_optional_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Não autenticado.")
+    deleted = database.delete_conversation(user["id"], chat_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversa não encontrada.")
+    return {"success": True}
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
 if __name__ == "__main__":
     import uvicorn
-    print("\n🚀 Iniciando servidor API v1.2.1 (Status Tracking)...")
+    print("\n🚀 Iniciando servidor API v1.3.0 (Auth + Chat Persistence)...")
     print("🔍 Rodando em: http://localhost:8000")
     print("📖 Documentação: http://localhost:8000/docs")
     print("📊 Status: http://localhost:8000/status\n")

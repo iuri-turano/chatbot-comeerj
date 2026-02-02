@@ -199,3 +199,10 @@ DEDUP_CONTENT_LENGTH = 200  # Characters to compare for duplicates
 
 # Enable/disable multi-search (feature flag for gradual rollout)
 ENABLE_MULTI_SEARCH = True  # Set to False to use legacy single search
+
+# ============================================================================
+# DATABASE & AUTH SETTINGS
+# ============================================================================
+
+SQLITE_DB_PATH = os.path.join(os.path.dirname(__file__), "app_data.db")
+SESSION_EXPIRY_HOURS = 24
