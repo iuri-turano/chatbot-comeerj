@@ -1,13 +1,7 @@
 import streamlit as st
 import requests
-from feedback_system import save_feedback, get_feedback_stats
 from chat_history import (
-    save_conversation,
-    load_conversation,
-    get_recent_conversations,
     generate_chat_id,
-    export_conversation_to_text,
-    delete_conversation
 )
 import os
 import time
@@ -31,33 +25,39 @@ def get_theme_css(theme: str) -> str:
     if theme == "dark":
         return """
         <style>
-            /* ===== DARK THEME ===== */
+            /* ===== DARK THEME — "Livro Antigo com Energia Moderna" ===== */
 
-            /* Main backgrounds */
+            /* Main background with subtle golden grid pattern */
             .stApp {
-                background-color: #1a1a1a !important;
+                background-color: #121212 !important;
+                background-image:
+                    radial-gradient(circle at 25% 25%, rgba(255, 215, 0, 0.03) 0%, transparent 50%),
+                    radial-gradient(circle at 75% 75%, rgba(255, 193, 7, 0.03) 0%, transparent 50%),
+                    linear-gradient(rgba(255, 215, 0, 0.02) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255, 215, 0, 0.02) 1px, transparent 1px) !important;
+                background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px !important;
             }
 
+            /* Sidebar with gradient */
             section[data-testid="stSidebar"] {
-                background-color: #0d0d0d !important;
+                background: linear-gradient(180deg, #0a0a0a 0%, #121212 50%, #0a0a0a 100%) !important;
+                border-right: 1px solid rgba(255, 215, 0, 0.1);
             }
 
-            /* Main container */
             .main .block-container {
                 padding-top: 2rem;
                 padding-bottom: 2rem;
             }
 
-            /* Chat message styling */
             .stChatMessage {
                 padding: 1rem !important;
                 border-radius: 10px !important;
                 margin-bottom: 1rem !important;
             }
 
-            /* User message bubble - Yellow gradient */
+            /* User message — vibrant yellow gradient */
             .stChatMessage[data-testid="user-message"] {
-                background: linear-gradient(135deg, #FFD700 0%, #FFA000 100%) !important;
+                background: linear-gradient(135deg, #FFD700 0%, #FF8F00 100%) !important;
                 color: #1a1a1a !important;
             }
 
@@ -67,21 +67,23 @@ def get_theme_css(theme: str) -> str:
                 color: #1a1a1a !important;
             }
 
-            /* Assistant message bubble - Dark gradient */
+            /* Assistant message — dark blue-tinted gradient */
             .stChatMessage[data-testid="assistant-message"] {
-                background: linear-gradient(135deg, #2d2d2d 0%, #3a3a3a 100%) !important;
+                background: linear-gradient(135deg, #1E1E2E 0%, #2A2A3E 100%) !important;
                 color: #FFFFFF !important;
                 border: 1px solid rgba(255, 215, 0, 0.2);
             }
 
-            /* Source cards */
+            /* Source cards with shadow */
             .source-card {
-                background-color: rgba(255, 215, 0, 0.05);
+                background-color: rgba(255, 215, 0, 0.08);
                 border-left: 4px solid #FFD700;
                 padding: 1rem;
                 margin: 0.5rem 0;
                 border-radius: 8px;
                 color: #E0E0E0;
+                box-shadow: 0 2px 8px rgba(255, 215, 0, 0.1),
+                            inset 0 1px 0 rgba(255, 215, 0, 0.05);
             }
 
             .source-card.priority-max { border-left-color: #FFD700; }
@@ -89,7 +91,7 @@ def get_theme_css(theme: str) -> str:
             .source-card.priority-medium { border-left-color: #00BFA5; }
             .source-card.priority-low { border-left-color: #78909C; }
 
-            /* Priority badges */
+            /* Priority badges — vibrant with shadow */
             .priority-badge {
                 display: inline-block;
                 padding: 0.25rem 0.75rem;
@@ -100,18 +102,22 @@ def get_theme_css(theme: str) -> str:
             }
 
             .badge-max {
-                background: linear-gradient(135deg, #FFD700 0%, #FFED4E 100%);
-                color: #1a1a1a;
+                background: #FFD700 !important;
+                color: #1a1a1a !important;
+                box-shadow: 0 1px 4px rgba(255, 215, 0, 0.3);
+                font-weight: 700 !important;
             }
 
             .badge-high {
-                background: linear-gradient(135deg, #FF6D00 0%, #FF9E40 100%);
-                color: white;
+                background: #FF6D00 !important;
+                color: white !important;
+                box-shadow: 0 1px 4px rgba(255, 109, 0, 0.3);
             }
 
             .badge-medium {
-                background: linear-gradient(135deg, #00BFA5 0%, #1DE9B6 100%);
-                color: #1a1a1a;
+                background: #00BFA5 !important;
+                color: white !important;
+                box-shadow: 0 1px 4px rgba(0, 191, 165, 0.3);
             }
 
             .badge-low {
@@ -129,6 +135,7 @@ def get_theme_css(theme: str) -> str:
                 color: #E0E0E0;
                 font-size: 0.92rem;
                 line-height: 1.6;
+                box-shadow: 0 2px 6px rgba(255, 215, 0, 0.08);
             }
 
             .quotation-card .quote-header {
@@ -143,31 +150,30 @@ def get_theme_css(theme: str) -> str:
                 font-style: italic;
             }
 
-            /* Feedback buttons */
+            /* Buttons with golden border and hover glow */
             .stButton button {
                 border-radius: 8px !important;
                 font-weight: 500 !important;
+                border: 1px solid rgba(255, 215, 0, 0.3) !important;
                 transition: all 0.3s ease !important;
             }
 
             .stButton button:hover {
                 transform: translateY(-2px) !important;
-                box-shadow: 0 4px 12px rgba(255, 215, 0, 0.3) !important;
+                border-color: #FFD700 !important;
+                box-shadow: 0 0 12px rgba(255, 215, 0, 0.2) !important;
             }
 
-            /* Expander styling */
             .streamlit-expanderHeader {
                 font-weight: 600 !important;
                 color: #FFD700 !important;
             }
 
-            /* Chat input */
             .stChatInputContainer {
                 border-top: 2px solid #FFD700;
                 padding-top: 1rem;
             }
 
-            /* Conversation history item */
             .conv-item {
                 padding: 0.75rem;
                 margin: 0.5rem 0;
@@ -182,7 +188,6 @@ def get_theme_css(theme: str) -> str:
                 transform: translateX(5px);
             }
 
-            /* Streaming indicator */
             .streaming-indicator {
                 display: inline-block;
                 width: 8px;
@@ -212,7 +217,6 @@ def get_theme_css(theme: str) -> str:
                 to { opacity: 1; }
             }
 
-            /* Progress indicator styling */
             .progress-container {
                 background: rgba(255, 215, 0, 0.05);
                 border-radius: 12px;
@@ -224,32 +228,29 @@ def get_theme_css(theme: str) -> str:
             .progress-stage {
                 display: flex;
                 align-items: center;
+                margin: 0.25rem 0;
+                font-size: 0.8rem;
+                color: rgba(255, 215, 0, 0.35);
+                font-weight: 400;
+                transition: all 0.3s ease;
+            }
+
+            .progress-stage.active {
+                font-size: 1.05rem;
+                font-weight: 700;
+                color: #FFC107;
                 margin: 0.5rem 0;
-                font-size: 0.95rem;
-                color: #FFD700;
-                font-weight: 500;
             }
 
-            .progress-stage.active { color: #FFC107; font-weight: 600; }
-            .progress-stage.completed { color: #78909C; opacity: 0.7; }
-
-            .progress-icon { margin-right: 0.75rem; font-size: 1.2rem; }
-
-            .progress-percentage {
-                margin-left: auto;
-                background: linear-gradient(135deg, #FFD700 0%, #FFA000 100%);
-                color: #1a1a1a;
-                padding: 0.25rem 0.75rem;
-                border-radius: 12px;
-                font-size: 0.85rem;
-                font-weight: 600;
+            .progress-stage.completed {
+                font-size: 0.8rem;
+                color: rgba(255, 255, 255, 0.3);
+                font-weight: 400;
+                opacity: 0.5;
             }
 
-            .stage-creating_llm { color: #FFD700; }
-            .stage-searching_books { color: #FF6D00; }
-            .stage-building_context { color: #FFC107; }
-            .stage-generating_answer { color: #00BFA5; }
-            .stage-formatting_response { color: #FFAB00; }
+            .progress-icon { margin-right: 0.75rem; font-size: 1rem; }
+            .progress-stage.active .progress-icon { font-size: 1.3rem; }
 
             @keyframes progressAnimation {
                 0% { width: 0%; }
@@ -260,7 +261,6 @@ def get_theme_css(theme: str) -> str:
                 animation: progressAnimation 0.5s ease-out;
             }
 
-            /* Auth form styling */
             .auth-section {
                 background: rgba(255, 215, 0, 0.05);
                 border-radius: 8px;
@@ -270,17 +270,24 @@ def get_theme_css(theme: str) -> str:
         </style>
         """
     else:
-        # LIGHT THEME
+        # LIGHT THEME — warm beige with real contrast
         return """
         <style>
-            /* ===== LIGHT THEME ===== */
+            /* ===== LIGHT THEME — Warm Beige with Contrast ===== */
 
+            /* Main background — warm beige with subtle dot pattern */
             .stApp {
-                background-color: #FFFFF0 !important;
+                background-color: #F5F0E8 !important;
+                background-image:
+                    radial-gradient(circle, rgba(0, 0, 0, 0.06) 1px, transparent 1px),
+                    radial-gradient(circle at 50% 50%, rgba(249, 168, 37, 0.05) 0%, transparent 70%) !important;
+                background-size: 20px 20px, 100% 100% !important;
             }
 
+            /* Sidebar with gradient beige */
             section[data-testid="stSidebar"] {
-                background-color: #FFFDE7 !important;
+                background: linear-gradient(180deg, #EDE7D9 0%, #F5F0E8 50%, #EDE7D9 100%) !important;
+                border-right: 1px solid #D4C4A8;
             }
 
             .main .block-container {
@@ -294,32 +301,44 @@ def get_theme_css(theme: str) -> str:
                 margin-bottom: 1rem !important;
             }
 
-            /* User message - Yellow gradient */
+            /* User message — strong amber gradient */
             .stChatMessage[data-testid="user-message"] {
-                background: linear-gradient(135deg, #FFD700 0%, #FFCA28 100%) !important;
-                color: #212121 !important;
+                background: linear-gradient(135deg, #F9A825 0%, #FF8F00 100%) !important;
+                color: #2C1810 !important;
             }
 
             .stChatMessage[data-testid="user-message"] p,
             .stChatMessage[data-testid="user-message"] span,
             .stChatMessage[data-testid="user-message"] div {
-                color: #212121 !important;
+                color: #2C1810 !important;
             }
 
-            /* Assistant message - Light gradient */
+            /* Assistant message — white card with border and shadow */
             .stChatMessage[data-testid="assistant-message"] {
-                background: linear-gradient(135deg, #FAFAFA 0%, #F5F5F5 100%) !important;
-                color: #212121 !important;
-                border: 1px solid rgba(0, 0, 0, 0.1);
+                background: #FFFFFF !important;
+                color: #2C1810 !important;
+                border: 1px solid #E0D5C5 !important;
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
             }
 
+            .stChatMessage[data-testid="assistant-message"] p,
+            .stChatMessage[data-testid="assistant-message"] span,
+            .stChatMessage[data-testid="assistant-message"] div {
+                color: #2C1810 !important;
+            }
+
+            /* Source cards — white with brown border and shadow */
             .source-card {
-                background-color: rgba(0, 0, 0, 0.03);
+                background-color: #FFFFFF;
                 border-left: 4px solid #F9A825;
                 padding: 1rem;
                 margin: 0.5rem 0;
                 border-radius: 8px;
-                color: #424242;
+                color: #2C1810;
+                border: 1px solid #D4C4A8;
+                border-left: 4px solid #F9A825;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08),
+                            0 1px 2px rgba(0, 0, 0, 0.04);
             }
 
             .source-card.priority-max { border-left-color: #F9A825; }
@@ -327,6 +346,7 @@ def get_theme_css(theme: str) -> str:
             .source-card.priority-medium { border-left-color: #00BFA5; }
             .source-card.priority-low { border-left-color: #78909C; }
 
+            /* Priority badges — vibrant solid colors */
             .priority-badge {
                 display: inline-block;
                 padding: 0.25rem 0.75rem;
@@ -337,18 +357,22 @@ def get_theme_css(theme: str) -> str:
             }
 
             .badge-max {
-                background: linear-gradient(135deg, #F9A825 0%, #FDD835 100%);
-                color: #212121;
+                background: #FFD700 !important;
+                color: #1a1a1a !important;
+                box-shadow: 0 1px 4px rgba(255, 215, 0, 0.3);
+                font-weight: 700 !important;
             }
 
             .badge-high {
-                background: linear-gradient(135deg, #FF6D00 0%, #FF9E40 100%);
-                color: white;
+                background: #FF6D00 !important;
+                color: white !important;
+                box-shadow: 0 1px 4px rgba(255, 109, 0, 0.3);
             }
 
             .badge-medium {
-                background: linear-gradient(135deg, #00BFA5 0%, #1DE9B6 100%);
-                color: #212121;
+                background: #00BFA5 !important;
+                color: white !important;
+                box-shadow: 0 1px 4px rgba(0, 191, 165, 0.3);
             }
 
             .badge-low {
@@ -356,43 +380,51 @@ def get_theme_css(theme: str) -> str:
                 color: white;
             }
 
+            /* Quotation card — white with warm border */
             .quotation-card {
-                background-color: rgba(249, 168, 37, 0.08);
+                background-color: #FFFFFF;
+                border-left: 3px solid #F9A825;
+                border: 1px solid #D4C4A8;
                 border-left: 3px solid #F9A825;
                 padding: 1rem;
                 margin: 0.75rem 0;
                 border-radius: 6px;
-                color: #424242;
+                color: #2C1810;
                 font-size: 0.92rem;
                 line-height: 1.6;
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
             }
 
             .quotation-card .quote-header {
                 font-weight: 600;
-                color: #E65100;
+                color: #BF360C;
                 margin-bottom: 0.5rem;
                 font-size: 0.9rem;
             }
 
             .quotation-card .quote-text {
-                color: #616161;
+                color: #4E342E;
                 font-style: italic;
             }
 
+            /* Buttons with warm border and hover */
             .stButton button {
                 border-radius: 8px !important;
                 font-weight: 500 !important;
+                border: 1px solid #D4C4A8 !important;
+                background: #FFFFFF !important;
                 transition: all 0.3s ease !important;
             }
 
             .stButton button:hover {
                 transform: translateY(-2px) !important;
-                box-shadow: 0 4px 12px rgba(249, 168, 37, 0.3) !important;
+                border-color: #F9A825 !important;
+                box-shadow: 0 2px 8px rgba(249, 168, 37, 0.2) !important;
             }
 
             .streamlit-expanderHeader {
                 font-weight: 600 !important;
-                color: #E65100 !important;
+                color: #BF360C !important;
             }
 
             .stChatInputContainer {
@@ -404,13 +436,15 @@ def get_theme_css(theme: str) -> str:
                 padding: 0.75rem;
                 margin: 0.5rem 0;
                 border-radius: 8px;
-                background-color: rgba(249, 168, 37, 0.05);
+                background-color: #FFFFFF;
+                border: 1px solid #E0D5C5;
                 cursor: pointer;
                 transition: all 0.3s ease;
             }
 
             .conv-item:hover {
-                background-color: rgba(249, 168, 37, 0.12);
+                background-color: #FFF8E1;
+                border-color: #F9A825;
                 transform: translateX(5px);
             }
 
@@ -444,42 +478,40 @@ def get_theme_css(theme: str) -> str:
             }
 
             .progress-container {
-                background: rgba(249, 168, 37, 0.05);
+                background: #FFFFFF;
                 border-radius: 12px;
                 padding: 1.5rem;
                 margin: 1rem 0;
-                border: 1px solid rgba(249, 168, 37, 0.3);
+                border: 1px solid #D4C4A8;
+                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
             }
 
             .progress-stage {
                 display: flex;
                 align-items: center;
-                margin: 0.5rem 0;
-                font-size: 0.95rem;
+                margin: 0.25rem 0;
+                font-size: 0.8rem;
+                color: rgba(44, 24, 16, 0.35);
+                font-weight: 400;
+                transition: all 0.3s ease;
+            }
+
+            .progress-stage.active {
+                font-size: 1.05rem;
+                font-weight: 700;
                 color: #E65100;
-                font-weight: 500;
+                margin: 0.5rem 0;
             }
 
-            .progress-stage.active { color: #FF8F00; font-weight: 600; }
-            .progress-stage.completed { color: #9E9E9E; opacity: 0.7; }
-
-            .progress-icon { margin-right: 0.75rem; font-size: 1.2rem; }
-
-            .progress-percentage {
-                margin-left: auto;
-                background: linear-gradient(135deg, #F9A825 0%, #FF8F00 100%);
-                color: white;
-                padding: 0.25rem 0.75rem;
-                border-radius: 12px;
-                font-size: 0.85rem;
-                font-weight: 600;
+            .progress-stage.completed {
+                font-size: 0.8rem;
+                color: rgba(44, 24, 16, 0.3);
+                font-weight: 400;
+                opacity: 0.5;
             }
 
-            .stage-creating_llm { color: #F9A825; }
-            .stage-searching_books { color: #FF6D00; }
-            .stage-building_context { color: #FF8F00; }
-            .stage-generating_answer { color: #00BFA5; }
-            .stage-formatting_response { color: #FFB300; }
+            .progress-icon { margin-right: 0.75rem; font-size: 1rem; }
+            .progress-stage.active .progress-icon { font-size: 1.3rem; }
 
             @keyframes progressAnimation {
                 0% { width: 0%; }
@@ -491,10 +523,11 @@ def get_theme_css(theme: str) -> str:
             }
 
             .auth-section {
-                background: rgba(249, 168, 37, 0.05);
+                background: #FFFFFF;
                 border-radius: 8px;
                 padding: 1rem;
-                border: 1px solid rgba(249, 168, 37, 0.15);
+                border: 1px solid #D4C4A8;
+                box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
             }
         </style>
         """
@@ -840,49 +873,40 @@ def is_logged_in() -> bool:
 
 
 def do_save_conversation():
-    """Save conversation - backend for logged users, local for anonymous"""
-    if is_logged_in():
-        title = "Conversa sem titulo"
-        for msg in st.session_state.messages:
-            if msg["role"] == "user":
-                title = msg["content"][:50]
-                break
-        backend_save_conversation(
-            st.session_state.current_chat_id,
-            st.session_state.messages,
-            title
-        )
-    else:
-        # Anonymous: save locally (session only, will be lost on refresh)
-        save_conversation(
-            st.session_state.current_chat_id,
-            st.session_state.messages,
-            st.session_state.user_name
-        )
+    """Save conversation ONLY for logged-in users."""
+    if not is_logged_in():
+        return  # Anonymous users: session-only, no persistence
+
+    title = "Conversa sem titulo"
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            title = msg["content"][:50]
+            break
+    backend_save_conversation(
+        st.session_state.current_chat_id,
+        st.session_state.messages,
+        title
+    )
 
 
 def do_get_recent_conversations(limit: int = 10):
-    """Get recent conversations from appropriate source"""
+    """Get recent conversations (logged-in users only)."""
     if is_logged_in():
         return backend_get_conversations(limit)
-    else:
-        return get_recent_conversations(limit)
+    return []
 
 
 def do_load_conversation(chat_id: str):
-    """Load conversation from appropriate source"""
+    """Load conversation (logged-in users only)."""
     if is_logged_in():
         return backend_load_conversation(chat_id)
-    else:
-        return load_conversation(chat_id)
+    return None
 
 
 def do_delete_conversation(chat_id: str):
-    """Delete conversation from appropriate source"""
+    """Delete conversation (logged-in users only)."""
     if is_logged_in():
         backend_delete_conversation(chat_id)
-    else:
-        delete_conversation(chat_id)
 
 
 # ============================================================================
@@ -903,20 +927,15 @@ def main():
         st.session_state.auth_token = None
     if "logged_user" not in st.session_state:
         st.session_state.logged_user = None
+    if "llm_cached" not in st.session_state:
+        st.session_state.llm_cached = False
 
     # Apply theme CSS
     st.markdown(get_theme_css(st.session_state.theme), unsafe_allow_html=True)
 
-    # Header with theme toggle
-    col1, col2 = st.columns([8, 1])
-    with col1:
-        st.title("📚 Assistente Espirita")
-        st.caption("Pergunte sobre a Doutrina Espirita baseada nas obras da Codificacao")
-    with col2:
-        theme_icon = "☀️" if st.session_state.theme == "dark" else "🌙"
-        if st.button(theme_icon, key="theme_toggle", help="Alternar tema claro/escuro"):
-            st.session_state.theme = "light" if st.session_state.theme == "dark" else "dark"
-            st.rerun()
+    # Header
+    st.title("📚 Assistente Espirita")
+    st.caption("Pergunte sobre a Doutrina Espirita baseada nas obras da Codificacao")
 
     # Check API status
     api_status = check_api_status()
@@ -936,6 +955,21 @@ def main():
         else:
             st.error("❌ Backend Offline")
             st.code(f"API URL: {API_URL}")
+
+        st.markdown("---")
+
+        # ====================================================================
+        # THEME TOGGLE
+        # ====================================================================
+        is_dark = st.toggle(
+            "🌙 Tema Escuro",
+            value=(st.session_state.theme == "dark"),
+            key="theme_toggle"
+        )
+        new_theme = "dark" if is_dark else "light"
+        if new_theme != st.session_state.theme:
+            st.session_state.theme = new_theme
+            st.rerun()
 
         st.markdown("---")
 
@@ -1042,59 +1076,49 @@ def main():
         # ====================================================================
         st.header("💬 Conversas")
 
-        col_new, col_save = st.columns(2)
-
-        with col_new:
-            if st.button("🆕 Nova", use_container_width=True):
-                if len(st.session_state.messages) > 0:
-                    do_save_conversation()
-                st.session_state.messages = []
-                st.session_state.current_chat_id = generate_chat_id()
-                st.rerun()
-
-        with col_save:
-            save_disabled = len(st.session_state.messages) == 0
-            if st.button("💾 Salvar", use_container_width=True, disabled=save_disabled):
+        if st.button("🆕 Nova Conversa", use_container_width=True):
+            if len(st.session_state.messages) > 0 and is_logged_in():
                 do_save_conversation()
-                st.success("✅ Salva!")
-                time.sleep(1)
-                st.rerun()
+            st.session_state.messages = []
+            st.session_state.current_chat_id = generate_chat_id()
+            st.rerun()
 
         # Recent conversations
-        recent_convs = do_get_recent_conversations(10)
+        if is_logged_in():
+            recent_convs = do_get_recent_conversations(10)
 
-        if recent_convs:
-            st.subheader("📜 Conversas Recentes")
+            if recent_convs:
+                st.subheader("📜 Conversas Recentes")
 
-            for conv in recent_convs:
-                with st.container():
-                    col_title, col_action = st.columns([4, 1])
+                for conv in recent_convs:
+                    with st.container():
+                        col_title, col_action = st.columns([4, 1])
 
-                    with col_title:
-                        title = conv.get('title', 'Sem titulo')
-                        if st.button(
-                            f"💬 {title[:30]}...",
-                            key=f"load_{conv.get('chat_id', '')}",
-                            use_container_width=True
-                        ):
-                            loaded = do_load_conversation(conv.get('chat_id', ''))
-                            if loaded:
-                                st.session_state.messages = loaded.get('messages', [])
-                                st.session_state.current_chat_id = conv.get('chat_id', '')
+                        with col_title:
+                            title = conv.get('title', 'Sem titulo')
+                            if st.button(
+                                f"💬 {title[:30]}...",
+                                key=f"load_{conv.get('chat_id', '')}",
+                                use_container_width=True
+                            ):
+                                loaded = do_load_conversation(conv.get('chat_id', ''))
+                                if loaded:
+                                    st.session_state.messages = loaded.get('messages', [])
+                                    st.session_state.current_chat_id = conv.get('chat_id', '')
+                                    st.rerun()
+
+                        with col_action:
+                            if st.button("🗑️", key=f"del_{conv.get('chat_id', '')}"):
+                                do_delete_conversation(conv.get('chat_id', ''))
                                 st.rerun()
 
-                    with col_action:
-                        if st.button("🗑️", key=f"del_{conv.get('chat_id', '')}"):
-                            do_delete_conversation(conv.get('chat_id', ''))
-                            st.rerun()
-
-                    msg_count = conv.get('message_count', 0)
-                    created = conv.get('created_at', '')[:10]
-                    st.caption(f"{msg_count} msgs • {created}")
-        elif is_logged_in():
-            st.caption("Nenhuma conversa salva ainda.")
+                        msg_count = conv.get('message_count', 0)
+                        created = conv.get('created_at', '')[:10]
+                        st.caption(f"{msg_count} msgs • {created}")
+            else:
+                st.caption("Nenhuma conversa salva ainda.")
         else:
-            st.caption("Faca login para salvar conversas entre sessoes.")
+            st.info("🔒 Faca login para salvar suas conversas entre sessoes.")
 
         st.markdown("---")
 
@@ -1153,6 +1177,16 @@ def main():
                 if feedback_key in st.session_state:
                     rating = st.session_state[feedback_key]
 
+                    # Optional name for anonymous users
+                    anonymous_name = "Anônimo"
+                    if not is_logged_in():
+                        anonymous_name = st.text_input(
+                            "Seu nome (opcional):",
+                            value="",
+                            placeholder="Como podemos te chamar?",
+                            key=f"anon_name_{idx}"
+                        ) or "Anônimo"
+
                     comment = st.text_area(
                         "Comentario (opcional):",
                         placeholder="Compartilhe sua opiniao...",
@@ -1164,15 +1198,23 @@ def main():
                         user_msg_idx = idx - 1
                         question = st.session_state.messages[user_msg_idx]["content"] if user_msg_idx >= 0 else ""
 
-                        save_feedback(
-                            question=question,
-                            answer=message["content"],
-                            sources=[s['content'][:200] for s in message.get("sources", [])],
-                            keywords=[],
-                            rating=rating,
-                            comment=comment,
-                            user_name=st.session_state.user_name
-                        )
+                        # Send feedback to backend API
+                        try:
+                            requests.post(
+                                f"{API_URL}/feedback",
+                                headers=_auth_headers(),
+                                json={
+                                    "question": question,
+                                    "answer": message["content"],
+                                    "sources": [s.get('content', '')[:200] for s in message.get("sources", []) or []],
+                                    "rating": rating,
+                                    "comment": comment,
+                                    "anonymous_name": anonymous_name
+                                },
+                                timeout=10
+                            )
+                        except Exception:
+                            pass  # Silently fail — don't block UX
 
                         st.session_state.messages[idx]["feedback_given"] = True
                         st.success("✅ Obrigado!")
@@ -1203,6 +1245,58 @@ def main():
                 full_response = ""
                 sources = None
                 current_stage = None
+                current_bar_value = 0.0
+                progress_cleared = False
+
+                # Show initial progress immediately before backend responds
+                # On subsequent questions, LLM is cached so skip that stage
+                is_first_query = not st.session_state.llm_cached
+
+                if is_first_query:
+                    stages_info = [
+                        ('creating_llm', '⚙️', 'Criando modelo LLM', 10),
+                        ('searching_books', '🔍', 'Buscando nos livros espíritas', 30),
+                        ('building_context', '📚', 'Construindo contexto', 50),
+                        ('generating_answer', '🤖', 'Gerando resposta', 70),
+                    ]
+                    initial_active = 'creating_llm'
+                    initial_emoji = '⚙️'
+                    initial_desc = 'Criando modelo LLM'
+                    initial_target = 0.10
+                else:
+                    stages_info = [
+                        ('searching_books', '🔍', 'Buscando nos livros espíritas', 30),
+                        ('building_context', '📚', 'Construindo contexto', 50),
+                        ('generating_answer', '🤖', 'Gerando resposta', 70),
+                    ]
+                    initial_active = 'searching_books'
+                    initial_emoji = '🔍'
+                    initial_desc = 'Buscando nos livros espíritas'
+                    initial_target = 0.30
+
+                initial_html = '<div class="progress-container">'
+                initial_html += '<div style="margin-bottom:0.75rem;font-weight:600;">🔍 Consultando os livros...</div>'
+                initial_html += f'''
+                <div class="progress-stage active stage-{initial_active}">
+                    <span class="progress-icon">{initial_emoji}</span>
+                    {initial_desc}
+                </div>'''
+                for stage_key, stage_emoji, stage_desc, stage_pct in stages_info[1:] if is_first_query else stages_info[1:]:
+                    initial_html += f'''
+                <div class="progress-stage">
+                    <span class="progress-icon">⏳</span>
+                    {stage_desc}
+                </div>'''
+                initial_html += '</div>'
+                progress_placeholder.markdown(initial_html, unsafe_allow_html=True)
+
+                # Animate bar to initial target
+                target = initial_target
+                step = max(target / 15, 0.01)
+                while current_bar_value < target:
+                    current_bar_value = min(current_bar_value + step, target)
+                    progress_bar.progress(current_bar_value)
+                    time.sleep(0.03)
 
                 try:
                     for chunk, chunk_sources, status_update in stream_api_response(
@@ -1212,28 +1306,45 @@ def main():
                         if status_update:
                             current_stage = status_update
                             progress = status_update['progress']
-                            description = status_update['description']
 
-                            progress_bar.progress(progress / 100)
+                            # Animate progress bar smoothly
+                            target = progress / 100
+                            step = max((target - current_bar_value) / 15, 0.01)
+                            while current_bar_value < target:
+                                current_bar_value = min(current_bar_value + step, target)
+                                progress_bar.progress(current_bar_value)
+                                time.sleep(0.03)
 
-                            stage_emoji = {
-                                'creating_llm': '⚙️',
-                                'searching_books': '🔍',
-                                'building_context': '📚',
-                                'generating_answer': '🤖',
-                                'formatting_response': '✨',
-                                'complete': '✅'
-                            }
-                            emoji = stage_emoji.get(status_update['stage'], '🔄')
+                            current_stage_name = status_update['stage']
+                            progress_html = '<div class="progress-container">'
+                            progress_html += '<div style="margin-bottom:0.75rem;font-weight:600;">🔍 Consultando os livros...</div>'
 
-                            progress_placeholder.markdown(
-                                f"**{emoji} {description}** ({progress}%)"
-                            )
+                            for stage_key, stage_emoji, stage_desc, stage_pct in stages_info:
+                                if stage_pct < progress:
+                                    css_class = "progress-stage completed"
+                                    icon = "✅"
+                                elif stage_key == current_stage_name:
+                                    css_class = f"progress-stage active stage-{stage_key}"
+                                    icon = stage_emoji
+                                else:
+                                    css_class = "progress-stage"
+                                    icon = "⏳"
+
+                                progress_html += f'''
+                                <div class="{css_class}">
+                                    <span class="progress-icon">{icon}</span>
+                                    {stage_desc}
+                                </div>'''
+
+                            progress_html += '</div>'
+                            progress_placeholder.markdown(progress_html, unsafe_allow_html=True)
 
                         elif chunk:
-                            if current_stage and current_stage.get('stage') == 'generating_answer' and len(full_response) == 0:
+                            # Clear progress after some text has appeared
+                            if not progress_cleared and len(full_response) > 80:
                                 progress_placeholder.empty()
                                 progress_bar.empty()
+                                progress_cleared = True
 
                             full_response += chunk
                             response_placeholder.markdown(full_response + " ▌")
@@ -1255,6 +1366,9 @@ def main():
 
                         # Full quotations
                         display_quotations(sources)
+
+                    # Mark LLM as cached for subsequent queries
+                    st.session_state.llm_cached = True
 
                     # Add to messages
                     st.session_state.messages.append({

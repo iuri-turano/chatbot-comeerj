@@ -152,6 +152,10 @@ context_validator = None
 multi_search_engine = None
 executor = ThreadPoolExecutor(max_workers=3)
 
+# LLM cache — reuse across requests with same model/temperature
+_llm_cache = {}  # (model_name, temperature) -> (llm, prompt_template)
+_llm_cache_lock = threading.Lock()
+
 # ============================================================================
 # MODELS
 # ============================================================================
@@ -408,8 +412,12 @@ def build_context_with_history(conversation_history: List[Message], max_history:
     return "\n".join(context_parts)
 
 def create_llm_and_prompt(model_name: str, temperature: float):
-    """Create LLM and prompt template"""
-    
+    """Create LLM and prompt template, with caching for repeated calls."""
+    cache_key = (model_name, temperature)
+    with _llm_cache_lock:
+        if cache_key in _llm_cache:
+            return _llm_cache[cache_key], True  # (llm, prompt), cached=True
+
     template = """Você é um assistente especializado em Espiritismo e Doutrina Espírita.
 
 REGRA FUNDAMENTAL - VALIDAÇÃO DE CONTEXTO:
@@ -477,8 +485,11 @@ RESPOSTA (em português correto, reflexiva, citando fontes - aplique o raciocín
         temperature=temperature,
         num_ctx=CONTEXT_WINDOW,
     )
-    
-    return llm, prompt
+
+    result = (llm, prompt)
+    with _llm_cache_lock:
+        _llm_cache[cache_key] = result
+    return result, False  # cached=False (first time)
 
 # ============================================================================
 # QUERY ENDPOINT (WITH STATUS TRACKING)
@@ -525,12 +536,13 @@ async def query(request: QueryRequest):
         print(f"\n{'='*60}")
         print(f"🔍 [{task_id}] Nova pergunta: {request.question[:100]}...")
         
-        # Update: Creating LLM
-        status_tracker.update_task(task_id, "creating_llm", 10)
-        llm, prompt_template = create_llm_and_prompt(
-            request.model_name, 
+        # Update: Creating LLM (skipped if cached)
+        (llm, prompt_template), was_cached = create_llm_and_prompt(
+            request.model_name,
             request.temperature
         )
+        if not was_cached:
+            status_tracker.update_task(task_id, "creating_llm", 10)
         
         # Update: Searching books (multi-search or single search based on feature flag)
         status_tracker.update_task(task_id, "multi_searching", 30)
@@ -686,14 +698,15 @@ async def query_stream(request: QueryRequest):
             # Send task_id first
             yield f"data: {json.dumps({'type': 'task_id', 'task_id': task_id})}\n\n"
 
-            # STAGE 1: Creating LLM (10%)
-            status_tracker.update_task(task_id, "creating_llm", 10)
-            yield f"data: {json.dumps({'type': 'status', 'stage': 'creating_llm', 'progress': 10, 'description': 'Criando modelo LLM'})}\n\n"
-
-            llm, prompt_template = create_llm_and_prompt(
+            # STAGE 1: Creating LLM (10%) — skipped if cached
+            (llm, prompt_template), was_cached = create_llm_and_prompt(
                 request.model_name,
                 request.temperature
             )
+
+            if not was_cached:
+                status_tracker.update_task(task_id, "creating_llm", 10)
+                yield f"data: {json.dumps({'type': 'status', 'stage': 'creating_llm', 'progress': 10, 'description': 'Criando modelo LLM'})}\n\n"
 
             # STAGE 2: Searching books (30%)
             status_tracker.update_task(task_id, "multi_searching", 30)
@@ -757,10 +770,6 @@ async def query_stream(request: QueryRequest):
                     # Small delay for natural reading pace (adjust as needed)
                     # 0.005s = 5ms per character = ~200 chars/second = natural reading speed
                     time.sleep(0.005)
-
-            # STAGE 5: Formatting response (90%)
-            status_tracker.update_task(task_id, "formatting_response", 90)
-            yield f"data: {json.dumps({'type': 'status', 'stage': 'formatting_response', 'progress': 90, 'description': 'Formatando resposta'})}\n\n"
 
             # Send sources
             formatted_sources = []
@@ -901,6 +910,77 @@ async def delete_conv(chat_id: str, request: Request):
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversa não encontrada.")
     return {"success": True}
+
+# ============================================================================
+# FEEDBACK ENDPOINTS
+# ============================================================================
+
+class FeedbackRequest(BaseModel):
+    question: str
+    answer: str
+    sources: Optional[List] = None
+    rating: str  # "good", "neutral", "bad"
+    comment: Optional[str] = None
+    anonymous_name: str = "Anônimo"
+    conversation_id: Optional[str] = None
+    message_index: Optional[int] = None
+
+@app.post("/feedback")
+async def submit_feedback(request: Request, body: FeedbackRequest):
+    """Save feedback to database."""
+    user = auth.get_optional_user(request)
+    user_id = user["id"] if user else None
+
+    sources_json = json.dumps(body.sources, ensure_ascii=False) if body.sources else None
+
+    feedback_id = database.save_feedback(
+        user_id=user_id,
+        anonymous_name=body.anonymous_name if not user else user.get("display_name", "Anônimo"),
+        question=body.question,
+        answer=body.answer,
+        sources_json=sources_json,
+        rating=body.rating,
+        comment=body.comment
+    )
+
+    return {"success": True, "feedback_id": feedback_id}
+
+# ============================================================================
+# ADMIN ENDPOINTS
+# ============================================================================
+
+@app.get("/admin/feedback")
+async def admin_feedback(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    rating: Optional[str] = None
+):
+    """Admin feedback dashboard. Requires authentication."""
+    user = auth.get_optional_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Não autenticado.")
+
+    feedbacks = database.get_feedback(limit, offset, rating)
+    stats = database.get_feedback_stats()
+    top_rated = database.get_top_rated_feedback(10)
+
+    return {
+        "feedbacks": feedbacks,
+        "stats": stats,
+        "top_rated": top_rated,
+        "pagination": {"limit": limit, "offset": offset}
+    }
+
+@app.get("/admin/feedback/export")
+async def admin_feedback_export(request: Request):
+    """Export all feedbacks as JSON for offline analysis."""
+    user = auth.get_optional_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Não autenticado.")
+
+    all_feedback = database.get_feedback(limit=10000)
+    return {"feedbacks": all_feedback, "total": len(all_feedback)}
 
 # ============================================================================
 # MAIN

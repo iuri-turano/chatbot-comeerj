@@ -70,6 +70,26 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);
                 CREATE INDEX IF NOT EXISTS idx_conversations_chat_id ON conversations(chat_id);
                 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    anonymous_name TEXT DEFAULT 'Anônimo',
+                    question TEXT NOT NULL,
+                    answer TEXT NOT NULL,
+                    sources_json TEXT,
+                    rating TEXT NOT NULL CHECK(rating IN ('good', 'neutral', 'bad')),
+                    comment TEXT,
+                    conversation_id INTEGER,
+                    message_index INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+                    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE SET NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating);
+                CREATE INDEX IF NOT EXISTS idx_feedback_user ON feedback(user_id);
+                CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
             """)
             conn.commit()
         finally:
@@ -306,3 +326,93 @@ def delete_conversation(user_id: int, chat_id: str) -> bool:
             return cursor.rowcount > 0
         finally:
             conn.close()
+
+
+# ============================================================================
+# FEEDBACK OPERATIONS
+# ============================================================================
+
+def save_feedback(user_id: Optional[int], anonymous_name: str, question: str,
+                  answer: str, sources_json: Optional[str], rating: str,
+                  comment: Optional[str], conversation_id: Optional[int] = None,
+                  message_index: Optional[int] = None) -> int:
+    with _write_lock:
+        conn = _get_connection()
+        try:
+            cursor = conn.execute(
+                """INSERT INTO feedback
+                   (user_id, anonymous_name, question, answer, sources_json,
+                    rating, comment, conversation_id, message_index)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, anonymous_name, question, answer, sources_json,
+                 rating, comment, conversation_id, message_index)
+            )
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            conn.close()
+
+
+def get_feedback(limit: int = 50, offset: int = 0,
+                 rating_filter: Optional[str] = None) -> List[Dict]:
+    conn = _get_connection()
+    try:
+        query = """SELECT f.*, u.email, u.display_name as user_display_name
+                   FROM feedback f
+                   LEFT JOIN users u ON f.user_id = u.id"""
+        params = []
+        if rating_filter:
+            query += " WHERE f.rating = ?"
+            params.append(rating_filter)
+        query += " ORDER BY f.created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_feedback_stats() -> Dict:
+    conn = _get_connection()
+    try:
+        total = conn.execute("SELECT COUNT(*) as c FROM feedback").fetchone()["c"]
+        good = conn.execute("SELECT COUNT(*) as c FROM feedback WHERE rating='good'").fetchone()["c"]
+        neutral = conn.execute("SELECT COUNT(*) as c FROM feedback WHERE rating='neutral'").fetchone()["c"]
+        bad = conn.execute("SELECT COUNT(*) as c FROM feedback WHERE rating='bad'").fetchone()["c"]
+
+        by_month = conn.execute("""
+            SELECT strftime('%Y-%m', created_at) as month,
+                   COUNT(*) as count,
+                   SUM(CASE WHEN rating='good' THEN 1 ELSE 0 END) as good,
+                   SUM(CASE WHEN rating='bad' THEN 1 ELSE 0 END) as bad
+            FROM feedback
+            GROUP BY month
+            ORDER BY month DESC
+            LIMIT 12
+        """).fetchall()
+
+        return {
+            "total": total,
+            "good": good,
+            "neutral": neutral,
+            "bad": bad,
+            "by_month": [dict(r) for r in by_month]
+        }
+    finally:
+        conn.close()
+
+
+def get_top_rated_feedback(limit: int = 10) -> List[Dict]:
+    conn = _get_connection()
+    try:
+        rows = conn.execute(
+            """SELECT question, answer, comment, created_at
+               FROM feedback
+               WHERE rating = 'good'
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
