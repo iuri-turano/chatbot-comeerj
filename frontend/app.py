@@ -1340,8 +1340,8 @@ def main():
                             progress_placeholder.markdown(progress_html, unsafe_allow_html=True)
 
                         elif chunk:
-                            # Clear progress after some text has appeared
-                            if not progress_cleared and len(full_response) > 80:
+                            # Clear progress as soon as answer starts streaming
+                            if not progress_cleared:
                                 progress_placeholder.empty()
                                 progress_bar.empty()
                                 progress_cleared = True
